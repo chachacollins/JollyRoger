@@ -9,7 +9,7 @@ pub const Lexer = struct {
     readPosition: usize,
     ch: u8,
     pub fn init(input: []const u8) Lexer {
-        const lexer = Lexer{
+        var lexer = Lexer{
             .input = input,
             .position = 0,
             .readPosition = 0,
@@ -18,7 +18,7 @@ pub const Lexer = struct {
         lexer.readChar();
         return lexer;
     }
-    fn readChar(self: *Lexer) void {
+    pub fn readChar(self: *Lexer) void {
         if (self.readPosition >= self.input.len) {
             self.ch = 0;
         } else {
@@ -27,53 +27,60 @@ pub const Lexer = struct {
         self.position = self.readPosition;
         self.readPosition += 1;
     }
-    pub fn nextToken(self: Lexer) token.Token {
-        var tok: token.Token = undefined;
+    pub fn nextToken(self: *Lexer) !token.Token {
+        var tok: token.Token = token.Token{
+            .Literal = undefined,
+            .Type = undefined,
+        };
         switch (self.ch) {
             '=' => {
-                tok = newToken(token.TokenType.ASSIGN, '=');
+                tok.Type = token.TokenType.ASSIGN;
+                tok.Literal = "=";
             },
             ';' => {
-                tok = newToken(token.TokenType.SEMICOLON, ';');
+                tok.Type = token.TokenType.SEMICOLON;
+                tok.Literal = ";";
             },
             '(' => {
-                tok = newToken(token.TokenType.LBRACE, '(');
+                tok.Type = token.TokenType.LPAREN;
+                tok.Literal = "(";
             },
 
             ')' => {
-                tok = newToken(token.TokenType.RBRACE, ')');
+                tok.Type = token.TokenType.RPAREN;
+                tok.Literal = ")";
             },
 
             ',' => {
-                tok = newToken(token.TokenType.COMMA, ',');
+                tok.Type = token.TokenType.COMMA;
+                tok.Literal = ",";
             },
 
             '+' => {
-                tok = newToken(token.TokenType.PLUS, '+');
+                tok.Type = token.TokenType.PLUS;
+                tok.Literal = "+";
             },
 
             '{' => {
-                tok = newToken(token.TokenType.LPAREN, '{');
+                tok.Type = token.TokenType.LBRACE;
+                tok.Literal = "{";
             },
 
             '}' => {
-                tok = newToken(token.TokenType.LPAREN, '{');
+                tok.Type = token.TokenType.RBRACE;
+                tok.Literal = "}";
             },
             0 => {
                 tok.Literal = "";
                 tok.Type = token.TokenType.EOF;
             },
+            else => {},
         }
         self.readChar();
         return tok;
     }
 };
 
-fn newToken(tokenType: token.TokenType, ch: u8) token.Token {
-    const chstr = try util.numToString(ch);
-    const t = token.Token{ .Type = tokenType, .Literal = chstr };
-    return t;
-}
 test "TestNextToken" {
     //pls zls
     const TestStruct = struct {
@@ -94,15 +101,12 @@ test "TestNextToken" {
         TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
         TestStruct{ .expectedType = token.TokenType.EOF, .expectedLiteral = "" },
     };
-    const lexer = Lexer.init(input);
-    for (tests, 0..) |tt, i| {
-        const tok = lexer.nextToken();
-        if (tok.Type != tt.expectedType) {
-            std.log.debug("test{d} failed - token type wrong. expected ={s}, got = {s}", .{ i, tt.expectedType, tok.Type });
-        }
+    var lexer = Lexer.init(input);
+    for (tests) |tt| {
+        const tok = try lexer.nextToken();
 
-        if (tok.Literal != tt.expectedLiteral) {
-            std.log.debug("test{d} failed - token Literal wrong. expected ={s}, got = {s}", .{ i, tt.expectedLiteral, tok.Literal });
-        }
+        try std.testing.expectEqual(tt.expectedType, tok.Type);
+
+        try std.testing.expectEqual(tt.expectedLiteral, tok.Literal);
     }
 }
