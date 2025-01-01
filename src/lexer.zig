@@ -2,7 +2,6 @@ const token = @import("token.zig");
 const std = @import("std");
 
 pub const Lexer = struct {
-    //zls
     input: []const u8,
     position: usize,
     readPosition: usize,
@@ -18,7 +17,14 @@ pub const Lexer = struct {
         lexer.readChar();
         return lexer;
     }
-    pub fn readChar(self: *Lexer) void {
+    fn peekChar(self: *Lexer) u8 {
+        if (self.position >= self.input.len) {
+            return 0;
+        } else {
+            return self.input[self.readPosition];
+        }
+    }
+    fn readChar(self: *Lexer) void {
         if (self.readPosition >= self.input.len) {
             self.ch = 0;
         } else {
@@ -62,8 +68,14 @@ pub const Lexer = struct {
         self.skipWhiteSpace();
         switch (self.ch) {
             '=' => {
-                tok.Type = token.TokenType.ASSIGN;
-                tok.Literal = "=";
+                if (self.peekChar() == '=') {
+                    self.readChar();
+                    tok.Type = token.TokenType.EQ;
+                    tok.Literal = "==";
+                } else {
+                    tok.Type = token.TokenType.ASSIGN;
+                    tok.Literal = "=";
+                }
             },
             ';' => {
                 tok.Type = token.TokenType.SEMICOLON;
@@ -98,6 +110,42 @@ pub const Lexer = struct {
                 tok.Type = token.TokenType.RBRACE;
                 tok.Literal = "}";
             },
+            '-' => {
+                tok.Type = token.TokenType.MINUS;
+                tok.Literal = "-";
+            },
+
+            '!' => {
+                if (self.peekChar() == '=') {
+                    self.readChar();
+                    // const literal = &[_]u8{ ch, self.ch };
+                    tok.Type = token.TokenType.NOT_EQ;
+                    tok.Literal = "!=";
+                } else {
+                    tok.Type = token.TokenType.BANG;
+                    tok.Literal = "!";
+                }
+            },
+
+            '/' => {
+                tok.Type = token.TokenType.SLASH;
+                tok.Literal = "/";
+            },
+
+            '*' => {
+                tok.Type = token.TokenType.ASTERIS;
+                tok.Literal = "*";
+            },
+
+            '<' => {
+                tok.Type = token.TokenType.LT;
+                tok.Literal = "<";
+            },
+
+            '>' => {
+                tok.Type = token.TokenType.GT;
+                tok.Literal = ">";
+            },
             0 => {
                 tok.Literal = "";
                 tok.Type = token.TokenType.EOF;
@@ -120,7 +168,6 @@ pub const Lexer = struct {
 };
 
 test "TestNextToken" {
-    //pls zls
     const TestStruct = struct {
         expectedType: token.TokenType,
         expectedLiteral: []const u8,
@@ -132,9 +179,17 @@ test "TestNextToken" {
         \\x + y;
         \\};
         \\let result = add(five, ten);
+        \\!-/*5;
+        \\5 < 10 > 5;
+        \\if (5 < 10) {
+        \\return true;
+        \\} else {
+        \\return false;
+        \\}
+        \\10 == 10;
+        \\10 != 9;
     ;
     const tests = [_]TestStruct{
-        //zls
         TestStruct{ .expectedType = token.TokenType.LET, .expectedLiteral = "let" },
         TestStruct{ .expectedType = token.TokenType.IDENT, .expectedLiteral = "six" },
         TestStruct{ .expectedType = token.TokenType.ASSIGN, .expectedLiteral = "=" },
@@ -171,15 +226,64 @@ test "TestNextToken" {
         TestStruct{ .expectedType = token.TokenType.IDENT, .expectedLiteral = "ten" },
         TestStruct{ .expectedType = token.TokenType.RPAREN, .expectedLiteral = ")" },
         TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.BANG, .expectedLiteral = "!" },
+        TestStruct{ .expectedType = token.TokenType.MINUS, .expectedLiteral = "-" },
+        TestStruct{ .expectedType = token.TokenType.SLASH, .expectedLiteral = "/" },
+        TestStruct{ .expectedType = token.TokenType.ASTERIS, .expectedLiteral = "*" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "5" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "5" },
+        TestStruct{ .expectedType = token.TokenType.LT, .expectedLiteral = "<" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "10" },
+        TestStruct{ .expectedType = token.TokenType.GT, .expectedLiteral = ">" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "5" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.IF, .expectedLiteral = "if" },
+        TestStruct{ .expectedType = token.TokenType.LPAREN, .expectedLiteral = "(" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "5" },
+        TestStruct{ .expectedType = token.TokenType.LT, .expectedLiteral = "<" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "10" },
+        TestStruct{ .expectedType = token.TokenType.RPAREN, .expectedLiteral = ")" },
+        TestStruct{ .expectedType = token.TokenType.LBRACE, .expectedLiteral = "{" },
+        TestStruct{ .expectedType = token.TokenType.RETURN, .expectedLiteral = "return" },
+        TestStruct{ .expectedType = token.TokenType.TRUE, .expectedLiteral = "true" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.RBRACE, .expectedLiteral = "}" },
+        TestStruct{ .expectedType = token.TokenType.ELSE, .expectedLiteral = "else" },
+        TestStruct{ .expectedType = token.TokenType.LBRACE, .expectedLiteral = "{" },
+        TestStruct{ .expectedType = token.TokenType.RETURN, .expectedLiteral = "return" },
+        TestStruct{ .expectedType = token.TokenType.FALSE, .expectedLiteral = "false" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.RBRACE, .expectedLiteral = "}" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "10" },
+        TestStruct{ .expectedType = token.TokenType.EQ, .expectedLiteral = "==" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "10" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "10" },
+        TestStruct{ .expectedType = token.TokenType.NOT_EQ, .expectedLiteral = "!=" },
+        TestStruct{ .expectedType = token.TokenType.INT, .expectedLiteral = "9" },
+        TestStruct{ .expectedType = token.TokenType.SEMICOLON, .expectedLiteral = ";" },
         TestStruct{ .expectedType = token.TokenType.EOF, .expectedLiteral = "" },
     };
     var lexer = Lexer.init(input);
-    for (tests) |tt| {
+    for (tests, 0..) |tt, i| {
         const tok = try lexer.nextToken();
-        try std.testing.expectEqual(tt.expectedType, tok.Type);
+
+        if (tt.expectedType != tok.Type) {
+            std.debug.print("test {d}\n", .{i});
+            std.debug.print("--------------------------------------------------------\n", .{});
+            std.debug.print("tok type: {}\n", .{tok.Type});
+            std.debug.print("tok expectedType: {}\n", .{tt.expectedType});
+            std.debug.print("--------------------------------------------------------\n", .{});
+            std.process.exit(1);
+        }
         // try std.testing.expectEqual(tt.expectedLiteral, tok.Literal);
         if (!std.mem.eql(u8, tt.expectedLiteral, tok.Literal)) {
-            std.debug.print("got tok: {s} but expectedLiteral {s}\n", .{ tok.Literal, tt.expectedLiteral });
+            std.debug.print("test {d}\n\n", .{i});
+            std.debug.print("--------------------------------------------------------\n", .{});
+            std.debug.print("tok: {s}\n", .{tok.Literal});
+            std.debug.print("tok expectedLiteral: {s}\n", .{tt.expectedLiteral});
+            std.debug.print("--------------------------------------------------------\n", .{});
             std.process.exit(1);
         }
         // std.debug.print("tok: {s}\n", .{tok.Literal});

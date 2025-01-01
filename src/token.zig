@@ -19,9 +19,22 @@ pub const TokenType = enum {
     RPAREN,
     LBRACE,
     RBRACE,
-    //
+    MINUS,
+    BANG,
+    ASTERIS,
+    SLASH,
+    LT,
+    GT,
+    //keywords
     FUNCTION,
     LET,
+    RETURN,
+    IF,
+    ELSE,
+    TRUE,
+    FALSE,
+    EQ,
+    NOT_EQ,
 };
 
 pub var keywords = std.StringHashMap(TokenType).init(std.heap.page_allocator);
@@ -36,4 +49,9 @@ pub fn lookUpIdent(key: []const u8) TokenType {
 pub fn init() !void {
     try insertKeywords("fn", TokenType.FUNCTION);
     try insertKeywords("let", TokenType.LET);
+    try insertKeywords("if", TokenType.IF);
+    try insertKeywords("else", TokenType.ELSE);
+    try insertKeywords("return", TokenType.RETURN);
+    try insertKeywords("true", TokenType.TRUE);
+    try insertKeywords("false", TokenType.FALSE);
 }
