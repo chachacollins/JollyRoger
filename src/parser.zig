@@ -27,7 +27,7 @@ pub const Parser = struct {
             try programStatements.append(stmt.?);
             try self.nextToken();
         }
-        program.statements = programStatements.items;
+        program.statements = try programStatements.toOwnedSlice();
         return program;
     }
     fn parseStatement(self: *Parser) !?ast.Statement {
@@ -83,6 +83,7 @@ test "TestLetStatement" {
     const lex = lexer.Lexer.init(input);
     var parser = try Parser.init(lex, std.testing.allocator);
     const program = try parser.parseProgram() orelse std.zig.fatal("parse program returned null\n", .{});
+    defer parser.allocator.free(program.statements);
     if (program.statements.len != 3) {
         std.zig.fatal("expected 3 program statements but got {d}\n", .{program.statements.len});
     }
@@ -98,8 +99,6 @@ test "TestLetStatement" {
         const stmt = program.statements[i];
         testLetStatement(stmt, tt.expectedIdentifier);
     }
-
-    parser.allocator.free(program.statements);
 }
 fn testLetStatement(s: ast.Statement, name: []const u8) void {
     if (!std.mem.eql(u8, s.tokenLiteral(), "let")) {

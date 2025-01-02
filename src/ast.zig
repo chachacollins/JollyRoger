@@ -1,4 +1,5 @@
 const token = @import("token.zig");
+const std = @import("std");
 
 pub const Node = union(enum) {
     statement: Statement,
