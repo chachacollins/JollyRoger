@@ -6,10 +6,9 @@ pub fn start(Allocator: std.mem.Allocator) !void {
     const prompt = ">>";
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
-    // var input = std.ArrayList([]const u8).init(Allocator);
-    // defer input.deinit();
     const stdout = bw.writer();
-    try stdout.print("Aargh me hearty! Welcome to tha Jolly Roger\n", .{});
+    try stdout.print("Aargh me hearty! Welcome to tha Jolly Roger V 0.0.1\n", .{});
+    defer token.keywords.deinit();
     while (true) {
         try stdout.print("{s}", .{prompt});
         try bw.flush(); // don't forget to flush!
