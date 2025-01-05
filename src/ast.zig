@@ -17,6 +17,8 @@ pub const Node = union(enum) {
 
 pub const Statement = union(enum) {
     letStatement: LetStatementStruct,
+    returnStatement: ReturnStatementStruct,
+    expressionStatement: ExpressionStatementStruct,
     pub fn tokenLiteral(self: Statement) []const u8 {
         switch (self) {
             inline else => |case| {
@@ -59,6 +61,24 @@ pub const Identifier = struct {
     token: token.Token,
     value: []const u8,
     pub fn tokenLiteral(self: Identifier) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const ReturnStatementStruct = struct {
+    token: token.Token,
+    returnValue: Expression,
+
+    pub fn tokenLiteral(self: ReturnStatementStruct) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const ExpressionStatementStruct = struct {
+    token: token.Token,
+    expression: Expression,
+
+    pub fn tokenLiteral(self: ExpressionStatementStruct) []const u8 {
         return self.token.Literal;
     }
 };
