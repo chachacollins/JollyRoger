@@ -21,6 +21,7 @@ pub const Parser = struct {
     curToken: token.Token,
     peekToken: token.Token,
     errors: std.ArrayList([]u8),
+    precedences: std.AutoHashMap(token.TokenType, Precedence),
     prefixParseFns: std.AutoHashMap(token.TokenType, prefixParseFn),
     infixParseFns: std.AutoHashMap(token.TokenType, infixParseFn),
     allocator: std.mem.Allocator,
@@ -34,11 +35,29 @@ pub const Parser = struct {
             .errors = std.ArrayList([]u8).init(allocator),
             .prefixParseFns = std.AutoHashMap(token.TokenType, prefixParseFn).init(allocator),
             .infixParseFns = std.AutoHashMap(token.TokenType, infixParseFn).init(allocator),
+            .precedences = std.AutoHashMap(token.TokenType, Precedence).init(allocator),
         };
         try p.registerPrefix(token.TokenType.IDENT, parseIdentifier);
         try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
         try p.registerPrefix(token.TokenType.BANG, parsePrefixExpression);
         try p.registerPrefix(token.TokenType.MINUS, parsePrefixExpression);
+        try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
+        try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
+        try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
+        try p.registerInfix(token.TokenType.ASTERIS, parseInfixExpression);
+        try p.registerInfix(token.TokenType.EQ, parseInfixExpression);
+        try p.registerInfix(token.TokenType.NOT_EQ, parseInfixExpression);
+        try p.registerInfix(token.TokenType.LT, parseInfixExpression);
+        try p.registerInfix(token.TokenType.GT, parseInfixExpression);
+
+        try p.precedences.put(token.TokenType.EQ, Precedence.EQUALS);
+        try p.precedences.put(token.TokenType.NOT_EQ, Precedence.EQUALS);
+        try p.precedences.put(token.TokenType.LT, Precedence.LESSGREATER);
+        try p.precedences.put(token.TokenType.GT, Precedence.LESSGREATER);
+        try p.precedences.put(token.TokenType.PLUS, Precedence.SUM);
+        try p.precedences.put(token.TokenType.MINUS, Precedence.SUM);
+        try p.precedences.put(token.TokenType.SLASH, Precedence.SUM);
+        try p.precedences.put(token.TokenType.ASTERIS, Precedence.SUM);
 
         try p.nextToken();
         try p.nextToken();
@@ -51,6 +70,7 @@ pub const Parser = struct {
         self.errors.deinit();
         self.prefixParseFns.deinit();
         self.infixParseFns.deinit();
+        self.precedences.deinit();
     }
 
     pub fn errors(self: *Parser) []const u8 {
@@ -66,6 +86,15 @@ pub const Parser = struct {
 
     fn registerInfix(self: *Parser, tokenType: token.TokenType, func: infixParseFn) !void {
         try self.infixParseFns.put(tokenType, func);
+    }
+    fn peekPrecedence(self: *Parser) !Precedence {
+        const prec = self.precedences.get(self.peekToken.Type) orelse Precedence.LOWEST;
+        return prec;
+    }
+
+    fn curPrecedence(self: *Parser) !u8 {
+        const prec = try self.precedences.get(self.curToken.Type) orelse Precedence.LOWEST;
+        return @intFromEnum(prec);
     }
 
     fn peekError(self: *Parser, tok: token.TokenType) !void {
@@ -137,13 +166,16 @@ pub const Parser = struct {
         return stmt;
     }
     fn parseExpression(self: *Parser, precedence: Precedence) !ast.Expression {
-        _ = precedence;
         const prefix = self.prefixParseFns.get(self.curToken.Type) orelse {
             self.noPrefixFnError(self.curToken.Type);
             return error.ParsingError;
         };
-
-        const leftExpression = try prefix(self);
+        var leftExpression = try prefix(self);
+        while (!self.peekTokenIs(token.TokenType.SEMICOLON) and @intFromEnum(precedence) < @intFromEnum(try self.peekPrecedence())) {
+            const infix = self.infixParseFns.get(self.peekToken.Type) orelse return leftExpression;
+            try self.nextToken();
+            leftExpression = try infix(self, leftExpression);
+        }
 
         return leftExpression;
     }
@@ -170,6 +202,23 @@ pub const Parser = struct {
         right_exp.* = try self.parseExpression(Precedence.PREFIX);
         exps.right = right_exp;
         return ast.Expression{ .prefixExpression = exps };
+    }
+    pub fn parseInfixExpression(self: *Parser, left: ast.Expression) !ast.Expression {
+        var exps = ast.InfixExpressionStruct{
+            .token = self.curToken,
+            .operator = self.curToken.Literal,
+            .left = undefined,
+            .right = undefined,
+        };
+        const leftExp = try self.allocator.create(ast.Expression);
+        leftExp.* = left;
+        exps.left = leftExp;
+        const precedence = try self.peekPrecedence();
+        try self.nextToken();
+        const rightExp = try self.allocator.create(ast.Expression);
+        rightExp.* = try self.parseExpression(precedence);
+        exps.right = rightExp;
+        return ast.Expression{ .infixExpression = exps };
     }
 
     fn curTokenIs(self: *Parser, t: token.TokenType) bool {
@@ -351,9 +400,7 @@ test "TestPrefixParsing" {
                 const exp = exprstmt.expression.prefixExpression;
                 try std.testing.expectEqualStrings(tt.operator, exp.operator);
                 defer parser.allocator.destroy(exp.right);
-                if (!try testIntegerLiteral(exp.right.*, tt.integerValue)) {
-                    std.zig.fatal("failure in evaluating exp right\n", .{});
-                }
+                try testIntegerLiteral(exp.right.*, tt.integerValue);
             },
             else => {
                 std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
@@ -362,24 +409,65 @@ test "TestPrefixParsing" {
     }
 }
 
-fn testIntegerLiteral(exp: ast.Expression, value: i64) !bool {
+fn testIntegerLiteral(exp: ast.Expression, value: i64) !void {
     switch (exp) {
         .integerLiteral => |integ| {
             if (integ.value != value) {
                 std.zig.fatal("got value {d} but expected {d}\n", .{ integ.value, value });
-                return false;
             }
             var buffer: [256]u8 = undefined;
             const str = try std.fmt.bufPrint(&buffer, "{d}", .{value});
             if (!std.mem.eql(u8, str, integ.tokenLiteral())) {
                 std.zig.fatal("got value {s} but expected {s}\n", .{ integ.tokenLiteral(), str });
-                return false;
             }
-            return true;
         },
         else => {
             std.zig.fatal("Not integerLiteral {}\n", .{exp});
-            return false;
         },
+    }
+}
+
+test "TestParsingInfixOperations" {
+    const testStruct = struct {
+        input: []const u8,
+        leftValue: i64,
+        operator: []const u8,
+        rightValue: i64,
+    };
+    const tests = [_]testStruct{
+        testStruct{ .input = "5 + 5", .operator = "+", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 - 5", .operator = "-", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 * 5", .operator = "*", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 / 5", .operator = "/", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 > 5", .operator = ">", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 < 5", .operator = "<", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 == 5", .operator = "==", .leftValue = 5, .rightValue = 5 },
+        testStruct{ .input = "5 != 5", .operator = "!=", .leftValue = 5, .rightValue = 5 },
+    };
+    for (tests) |tt| {
+        const lex = lexer.Lexer.init(tt.input);
+        var parser = try Parser.init(lex, std.testing.allocator);
+        defer parser.deinit();
+        const program = try parser.parseProgram() orelse {
+            std.zig.fatal("parse program returned null\n", .{});
+        };
+        defer parser.allocator.free(program.statements);
+        if (program.statements.len != 1) {
+            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        }
+        const stmt = program.statements[0];
+        switch (stmt) {
+            .expressionStatement => |exprstmt| {
+                const exp = exprstmt.expression.infixExpression;
+                try std.testing.expectEqualStrings(tt.operator, exp.operator);
+                defer parser.allocator.destroy(exp.left);
+                defer parser.allocator.destroy(exp.right);
+                try testIntegerLiteral(exp.left.*, tt.leftValue);
+                try testIntegerLiteral(exp.right.*, tt.rightValue);
+            },
+            else => {
+                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+            },
+        }
     }
 }
