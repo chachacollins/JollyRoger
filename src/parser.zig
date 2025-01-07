@@ -44,6 +44,8 @@ pub const Parser = struct {
         try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
         try p.registerPrefix(token.TokenType.BANG, parsePrefixExpression);
         try p.registerPrefix(token.TokenType.MINUS, parsePrefixExpression);
+        try p.registerPrefix(token.TokenType.TRUE, parseBool);
+        try p.registerPrefix(token.TokenType.FALSE, parseBool);
         try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
@@ -223,6 +225,11 @@ pub const Parser = struct {
         rightExp.* = try self.parseExpression(precedence);
         exps.right = rightExp;
         return ast.Expression{ .infixExpression = exps };
+    }
+    pub fn parseBool(self: *Parser) !ast.Expression {
+        const exp = ast.BooleanLiteralStruct{ .token = self.curToken, .value = self.curTokenIs(token.TokenType.TRUE) };
+        const stmt = ast.Expression{ .boolean = exp };
+        return stmt;
     }
 
     fn curTokenIs(self: *Parser, t: token.TokenType) bool {
@@ -470,5 +477,48 @@ test "TestParsingInfixOperations" {
                 std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
             },
         }
+    }
+}
+
+test "TestBooleanParsing" {
+    const testStruct = struct { input: []const u8, value: bool };
+    const tests = [_]testStruct{
+        testStruct{ .input = "true", .value = true },
+        testStruct{ .input = "false", .value = false },
+    };
+    for (tests) |tt| {
+        const lex = lexer.Lexer.init(tt.input);
+        var parser = try Parser.init(lex, std.testing.allocator);
+        defer parser.deinit();
+        const program = try parser.parseProgram() orelse {
+            std.zig.fatal("parse program returned null\n", .{});
+        };
+        defer parser.allocator.free(program.statements);
+        if (program.statements.len != 1) {
+            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        }
+        const stmt = program.statements[0];
+        switch (stmt) {
+            .expressionStatement => |exprstmt| {
+                const exp = exprstmt.expression;
+                try testBool(exp, tt.value);
+            },
+            else => {
+                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+            },
+        }
+    }
+}
+
+fn testBool(exp: ast.Expression, value: bool) !void {
+    switch (exp) {
+        .boolean => |booln| {
+            if (booln.value != value) {
+                std.zig.fatal("got value {} but expected {}\n", .{ booln.value, value });
+            }
+        },
+        else => {
+            std.zig.fatal("Not boolnerLiteral {}\n", .{exp});
+        },
     }
 }
