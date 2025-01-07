@@ -25,7 +25,9 @@ pub const Parser = struct {
     prefixParseFns: std.AutoHashMap(token.TokenType, prefixParseFn),
     infixParseFns: std.AutoHashMap(token.TokenType, infixParseFn),
     allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     pub fn init(lex: lexer.Lexer, allocator: std.mem.Allocator) !Parser {
+        const arena = std.heap.ArenaAllocator.init(allocator);
         var p = Parser{
             //zls
             .lexer = lex,
@@ -36,6 +38,7 @@ pub const Parser = struct {
             .prefixParseFns = std.AutoHashMap(token.TokenType, prefixParseFn).init(allocator),
             .infixParseFns = std.AutoHashMap(token.TokenType, infixParseFn).init(allocator),
             .precedences = std.AutoHashMap(token.TokenType, Precedence).init(allocator),
+            .arena = arena,
         };
         try p.registerPrefix(token.TokenType.IDENT, parseIdentifier);
         try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
@@ -71,6 +74,7 @@ pub const Parser = struct {
         self.prefixParseFns.deinit();
         self.infixParseFns.deinit();
         self.precedences.deinit();
+        self.arena.deinit();
     }
 
     pub fn errors(self: *Parser) []const u8 {
@@ -198,7 +202,7 @@ pub const Parser = struct {
             .right = undefined,
         };
         try self.nextToken();
-        const right_exp = try self.allocator.create(ast.Expression);
+        const right_exp = try self.arena.allocator().create(ast.Expression);
         right_exp.* = try self.parseExpression(Precedence.PREFIX);
         exps.right = right_exp;
         return ast.Expression{ .prefixExpression = exps };
@@ -210,12 +214,12 @@ pub const Parser = struct {
             .left = undefined,
             .right = undefined,
         };
-        const leftExp = try self.allocator.create(ast.Expression);
+        const leftExp = try self.arena.allocator().create(ast.Expression);
         leftExp.* = left;
         exps.left = leftExp;
         const precedence = try self.peekPrecedence();
         try self.nextToken();
-        const rightExp = try self.allocator.create(ast.Expression);
+        const rightExp = try self.arena.allocator().create(ast.Expression);
         rightExp.* = try self.parseExpression(precedence);
         exps.right = rightExp;
         return ast.Expression{ .infixExpression = exps };
@@ -399,7 +403,6 @@ test "TestPrefixParsing" {
             .expressionStatement => |exprstmt| {
                 const exp = exprstmt.expression.prefixExpression;
                 try std.testing.expectEqualStrings(tt.operator, exp.operator);
-                defer parser.allocator.destroy(exp.right);
                 try testIntegerLiteral(exp.right.*, tt.integerValue);
             },
             else => {
@@ -460,8 +463,6 @@ test "TestParsingInfixOperations" {
             .expressionStatement => |exprstmt| {
                 const exp = exprstmt.expression.infixExpression;
                 try std.testing.expectEqualStrings(tt.operator, exp.operator);
-                defer parser.allocator.destroy(exp.left);
-                defer parser.allocator.destroy(exp.right);
                 try testIntegerLiteral(exp.left.*, tt.leftValue);
                 try testIntegerLiteral(exp.right.*, tt.rightValue);
             },
