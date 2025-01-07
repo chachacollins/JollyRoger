@@ -37,6 +37,8 @@ pub const Parser = struct {
         };
         try p.registerPrefix(token.TokenType.IDENT, parseIdentifier);
         try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
+        try p.registerPrefix(token.TokenType.BANG, parsePrefixExpression);
+        try p.registerPrefix(token.TokenType.MINUS, parsePrefixExpression);
 
         try p.nextToken();
         try p.nextToken();
@@ -53,6 +55,10 @@ pub const Parser = struct {
 
     pub fn errors(self: *Parser) []const u8 {
         return self.errors;
+    }
+    fn noPrefixFnError(self: *Parser, tok: token.TokenType) void {
+        _ = self;
+        std.debug.print("no prefix function found for {}\n", .{tok});
     }
     fn registerPrefix(self: *Parser, tokenType: token.TokenType, func: prefixParseFn) !void {
         try self.prefixParseFns.put(tokenType, func);
@@ -133,7 +139,7 @@ pub const Parser = struct {
     fn parseExpression(self: *Parser, precedence: Precedence) !ast.Expression {
         _ = precedence;
         const prefix = self.prefixParseFns.get(self.curToken.Type) orelse {
-            self.errors.append(try std.fmt.allocPrint(self.allocator, "no prefix parse function for {s} found", .{@tagName(self.curToken.Type)})) catch unreachable;
+            self.noPrefixFnError(self.curToken.Type);
             return error.ParsingError;
         };
 
@@ -152,6 +158,18 @@ pub const Parser = struct {
         lit.value = value;
         const stmt = ast.Expression{ .integerLiteral = lit };
         return stmt;
+    }
+    pub fn parsePrefixExpression(self: *Parser) !ast.Expression {
+        var exps = ast.PrefixExpressionStruct{
+            .token = self.curToken,
+            .operator = self.curToken.Literal,
+            .right = undefined,
+        };
+        try self.nextToken();
+        const right_exp = try self.allocator.create(ast.Expression);
+        right_exp.* = try self.parseExpression(Precedence.PREFIX);
+        exps.right = right_exp;
+        return ast.Expression{ .prefixExpression = exps };
     }
 
     fn curTokenIs(self: *Parser, t: token.TokenType) bool {
@@ -302,6 +320,66 @@ test "TestIntegerExpression" {
         },
         else => {
             std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+        },
+    }
+}
+
+test "TestPrefixParsing" {
+    const testStruct = struct {
+        input: []const u8,
+        operator: []const u8,
+        integerValue: i64,
+    };
+    const tests = [_]testStruct{
+        testStruct{ .input = "!5", .operator = "!", .integerValue = 5 },
+        testStruct{ .input = "-15", .operator = "-", .integerValue = 15 },
+    };
+    for (tests) |tt| {
+        const lex = lexer.Lexer.init(tt.input);
+        var parser = try Parser.init(lex, std.testing.allocator);
+        defer parser.deinit();
+        const program = try parser.parseProgram() orelse {
+            std.zig.fatal("parse program returned null\n", .{});
+        };
+        defer parser.allocator.free(program.statements);
+        if (program.statements.len != 1) {
+            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        }
+        const stmt = program.statements[0];
+        switch (stmt) {
+            .expressionStatement => |exprstmt| {
+                const exp = exprstmt.expression.prefixExpression;
+                try std.testing.expectEqualStrings(tt.operator, exp.operator);
+                defer parser.allocator.destroy(exp.right);
+                if (!try testIntegerLiteral(exp.right.*, tt.integerValue)) {
+                    std.zig.fatal("failure in evaluating exp right\n", .{});
+                }
+            },
+            else => {
+                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+            },
+        }
+    }
+}
+
+fn testIntegerLiteral(exp: ast.Expression, value: i64) !bool {
+    switch (exp) {
+        .integerLiteral => |integ| {
+            if (integ.value != value) {
+                std.zig.fatal("got value {d} but expected {d}\n", .{ integ.value, value });
+                return false;
+            }
+            var buffer: [256]u8 = undefined;
+            const str = try std.fmt.bufPrint(&buffer, "{d}", .{value});
+            if (!std.mem.eql(u8, str, integ.tokenLiteral())) {
+                std.zig.fatal("got value {s} but expected {s}\n", .{ integ.tokenLiteral(), str });
+                return false;
+            }
+            return true;
+        },
+        else => {
+            std.zig.fatal("Not integerLiteral {}\n", .{exp});
+            return false;
         },
     }
 }

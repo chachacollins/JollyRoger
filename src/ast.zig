@@ -30,6 +30,7 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     identifier: Identifier,
     integerLiteral: IntegerLiteralStruct,
+    prefixExpression: PrefixExpressionStruct,
     pub fn tokenLiteral(self: Expression) []const u8 {
         switch (self) {
             inline else => |case| {
@@ -89,6 +90,16 @@ pub const IntegerLiteralStruct = struct {
     value: i64,
 
     pub fn tokenLiteral(self: IntegerLiteralStruct) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const PrefixExpressionStruct = struct {
+    token: token.Token,
+    operator: []const u8,
+    right: *Expression,
+
+    pub fn tokenLiteral(self: PrefixExpressionStruct) []const u8 {
         return self.token.Literal;
     }
 };

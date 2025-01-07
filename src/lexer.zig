@@ -286,12 +286,5 @@ test "TestNextToken" {
             std.debug.print("--------------------------------------------------------\n", .{});
             std.process.exit(1);
         }
-        // std.debug.print("tok: {s}\n", .{tok.Literal});
-        // std.debug.print("tok expectedLiteral: {s}\n", .{tt.expectedLiteral});
-        //
-        // std.debug.print("tok  type: {}\n", .{tok.Type});
-        // std.debug.print("tok expectedType: {}\n", .{tt.expectedType});
-        //
-        // std.debug.print("--------------------------------------------------------\n", .{});
     }
 }
