@@ -36,6 +36,8 @@ pub const Parser = struct {
             .infixParseFns = std.AutoHashMap(token.TokenType, infixParseFn).init(allocator),
         };
         try p.registerPrefix(token.TokenType.IDENT, parseIdentifier);
+        try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
+
         try p.nextToken();
         try p.nextToken();
         return p;
@@ -142,6 +144,13 @@ pub const Parser = struct {
     pub fn parseIdentifier(self: *Parser) !ast.Expression {
         const pi = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
         const stmt = ast.Expression{ .identifier = pi };
+        return stmt;
+    }
+    pub fn parseIntegerLiteral(self: *Parser) !ast.Expression {
+        var lit = ast.IntegerLiteralStruct{ .token = self.curToken, .value = undefined };
+        const value = try std.fmt.parseInt(i64, self.curToken.Literal, 10);
+        lit.value = value;
+        const stmt = ast.Expression{ .integerLiteral = lit };
         return stmt;
     }
 
@@ -265,6 +274,31 @@ test "TestIdentifierExpression" {
         .expressionStatement => |exprstmt| {
             try std.testing.expectEqualStrings("foobar", exprstmt.expression.identifier.value);
             try std.testing.expectEqualStrings("foobar", exprstmt.expression.identifier.tokenLiteral());
+        },
+        else => {
+            std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+        },
+    }
+}
+
+test "TestIntegerExpression" {
+    const input = "5;";
+    const lex = lexer.Lexer.init(input);
+    var parser = try Parser.init(lex, std.testing.allocator);
+    defer parser.deinit();
+    const program = try parser.parseProgram() orelse {
+        std.zig.fatal("parse program returned null\n", .{});
+    };
+    defer parser.allocator.free(program.statements);
+
+    if (program.statements.len != 1) {
+        std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+    }
+    const stmt = program.statements[0];
+    switch (stmt) {
+        .expressionStatement => |exprstmt| {
+            try std.testing.expectEqual(5, exprstmt.expression.integerLiteral.value);
+            try std.testing.expectEqualStrings("5", exprstmt.expression.integerLiteral.tokenLiteral());
         },
         else => {
             std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
