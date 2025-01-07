@@ -46,6 +46,7 @@ pub const Parser = struct {
         try p.registerPrefix(token.TokenType.MINUS, parsePrefixExpression);
         try p.registerPrefix(token.TokenType.TRUE, parseBool);
         try p.registerPrefix(token.TokenType.FALSE, parseBool);
+        try p.registerPrefix(token.TokenType.LPAREN, parseGroupedExpression);
         try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
@@ -230,6 +231,14 @@ pub const Parser = struct {
         const exp = ast.BooleanLiteralStruct{ .token = self.curToken, .value = self.curTokenIs(token.TokenType.TRUE) };
         const stmt = ast.Expression{ .boolean = exp };
         return stmt;
+    }
+    pub fn parseGroupedExpression(self: *Parser) !ast.Expression {
+        try self.nextToken();
+        const exp = try self.parseExpression(Precedence.LOWEST);
+        if (!try self.expectPeek(token.TokenType.RPAREN)) {
+            return error.ExpectedRparen;
+        }
+        return exp;
     }
 
     fn curTokenIs(self: *Parser, t: token.TokenType) bool {
