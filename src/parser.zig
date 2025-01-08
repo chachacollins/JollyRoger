@@ -618,6 +618,7 @@ test "TestIfExpression" {
                 else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
             }
 
+            defer parser.allocator.free(if_exp.consequence.statement);
             if (if_exp.consequence.statement.len != 1) {
                 std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
             }
@@ -692,6 +693,7 @@ test "TestIfElseExpression" {
                 else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
             }
 
+            defer parser.allocator.free(if_exp.consequence.statement);
             // Test consequence
             if (if_exp.consequence.statement.len != 1) {
                 std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
@@ -711,6 +713,7 @@ test "TestIfElseExpression" {
 
             // Test alternative (else block)
             if (if_exp.alternative) |alt| {
+                defer parser.allocator.free(alt.statement);
                 if (alt.statement.len != 1) {
                     std.debug.panic("alternative should have 1 statement, got {d}\n", .{alt.statement.len});
                 }
