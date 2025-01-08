@@ -48,6 +48,7 @@ pub const Parser = struct {
         try p.registerPrefix(token.TokenType.FALSE, parseBool);
         try p.registerPrefix(token.TokenType.LPAREN, parseGroupedExpression);
         try p.registerPrefix(token.TokenType.IF, parseIfExpression);
+        try p.registerPrefix(token.TokenType.FUNCTION, parseFunctionLiteral);
         try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
@@ -276,7 +277,42 @@ pub const Parser = struct {
         }
         return exp;
     }
+    pub fn parseFunctionLiteral(self: *Parser) !ast.Expression {
+        var lit = ast.FunctionLiteralStruct{ .token = self.curToken, .body = undefined, .parameters = std.ArrayList(ast.Identifier).init(self.arena.allocator()) };
 
+        if (!try self.expectPeek(token.TokenType.LPAREN)) {
+            return error.MissingLPAREN;
+        }
+        try self.parseFunctionParameters(&lit.parameters);
+        if (!try self.expectPeek(token.TokenType.LBRACE)) {
+            return error.MissingLBRACE;
+        }
+
+        lit.body = try self.parseBlockStatement();
+        return ast.Expression{ .functionLiteral = lit };
+    }
+
+    fn parseFunctionParameters(self: *Parser, params: *std.ArrayList(ast.Identifier)) !void {
+        if (self.peekTokenIs(token.TokenType.RPAREN)) {
+            try self.nextToken();
+            return;
+        }
+
+        try self.nextToken();
+        const ident = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
+        try params.append(ident);
+
+        while (self.peekTokenIs(token.TokenType.COMMA)) {
+            try self.nextToken();
+            try self.nextToken();
+            const idents = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
+            try params.append(idents);
+        }
+
+        if (!try self.expectPeek(token.TokenType.RPAREN)) {
+            return error.MissingRPAREN;
+        }
+    }
     fn curTokenIs(self: *Parser, t: token.TokenType) bool {
         return self.curToken.Type == t;
     }
@@ -726,6 +762,81 @@ test "TestIfElseExpression" {
                 }
             } else {
                 std.debug.panic("expected alternative to be present\n", .{});
+            }
+        },
+        else => {
+            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
+        },
+    }
+}
+
+test "TestFunctionLiteralParsing" {
+    const input = "fn(x, y) { x + y; }";
+    const lex = lexer.Lexer.init(input);
+    var parser = try Parser.init(lex, std.testing.allocator);
+    defer parser.deinit();
+
+    const program = try parser.parseProgram() orelse {
+        std.debug.panic("parse program returned null\n", .{});
+    };
+    defer parser.allocator.free(program.statements);
+
+    if (program.statements.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    }
+
+    const stmt = program.statements[0];
+    switch (stmt) {
+        .expressionStatement => |exprstmt| {
+            const function = switch (exprstmt.expression) {
+                .functionLiteral => |fn_lit| fn_lit,
+                else => {
+                    std.debug.panic("expression not functionLiteral, got {}\n", .{exprstmt.expression});
+                },
+            };
+
+            // Test parameters
+            if (function.parameters.items.len != 2) {
+                std.debug.panic("function literal should have 2 parameters, got {d}\n", .{function.parameters.items.len});
+            }
+
+            try std.testing.expectEqualStrings("x", function.parameters.items[0].value);
+            try std.testing.expectEqualStrings("y", function.parameters.items[1].value);
+
+            // Test function body
+            if (function.body.statement.items.len != 1) {
+                std.debug.panic("function body should have 1 statement, got {d}\n", .{function.body.statement.items.len});
+            }
+
+            const bodyStmt = function.body.statement.items[0];
+            switch (bodyStmt) {
+                .expressionStatement => |body_expr| {
+                    const infix = switch (body_expr.expression) {
+                        .infixExpression => |infix| infix,
+                        else => {
+                            std.debug.panic("body expression not infixExpression, got {}\n", .{body_expr.expression});
+                        },
+                    };
+
+                    try std.testing.expectEqualStrings("+", infix.operator);
+
+                    // Test left side of expression
+                    switch (infix.left.*) {
+                        .identifier => |ident| {
+                            try std.testing.expectEqualStrings("x", ident.value);
+                        },
+                        else => std.debug.panic("left not identifier, got {}\n", .{infix.left.*}),
+                    }
+
+                    // Test right side of expression
+                    switch (infix.right.*) {
+                        .identifier => |ident| {
+                            try std.testing.expectEqualStrings("y", ident.value);
+                        },
+                        else => std.debug.panic("right not identifier, got {}\n", .{infix.right.*}),
+                    }
+                },
+                else => std.debug.panic("body statement not expressionStatement, got {}\n", .{bodyStmt}),
             }
         },
         else => {

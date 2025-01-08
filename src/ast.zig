@@ -35,6 +35,7 @@ pub const Expression = union(enum) {
     infixExpression: InfixExpressionStruct,
     boolean: BooleanLiteralStruct,
     ifExpression: IfExpressionStruct,
+    functionLiteral: FunctionLiteralStruct,
     pub fn tokenLiteral(self: Expression) []const u8 {
         switch (self) {
             inline else => |case| {
@@ -141,6 +142,16 @@ pub const BlockStatementStruct = struct {
     statement: std.ArrayList(Statement),
 
     pub fn tokenLiteral(self: BlockStatementStruct) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const FunctionLiteralStruct = struct {
+    token: token.Token,
+    parameters: std.ArrayList(Identifier),
+    body: BlockStatementStruct,
+
+    pub fn tokenLiteral(self: FunctionLiteralStruct) []const u8 {
         return self.token.Literal;
     }
 };
