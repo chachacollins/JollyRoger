@@ -19,6 +19,7 @@ pub const Statement = union(enum) {
     letStatement: LetStatementStruct,
     returnStatement: ReturnStatementStruct,
     expressionStatement: ExpressionStatementStruct,
+    blockStatement: BlockStatementStruct,
     pub fn tokenLiteral(self: Statement) []const u8 {
         switch (self) {
             inline else => |case| {
@@ -33,6 +34,7 @@ pub const Expression = union(enum) {
     prefixExpression: PrefixExpressionStruct,
     infixExpression: InfixExpressionStruct,
     boolean: BooleanLiteralStruct,
+    ifExpression: IfExpressionStruct,
     pub fn tokenLiteral(self: Expression) []const u8 {
         switch (self) {
             inline else => |case| {
@@ -119,7 +121,26 @@ pub const InfixExpressionStruct = struct {
 pub const BooleanLiteralStruct = struct {
     token: token.Token,
     value: bool,
-    pub fn tokenLiteral(self: InfixExpressionStruct) []const u8 {
+    pub fn tokenLiteral(self: BooleanLiteralStruct) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const IfExpressionStruct = struct {
+    token: token.Token,
+    condition: *Expression,
+    consequence: BlockStatementStruct,
+    alternative: ?BlockStatementStruct,
+    pub fn tokenLiteral(self: IfExpressionStruct) []const u8 {
+        return self.token.Literal;
+    }
+};
+
+pub const BlockStatementStruct = struct {
+    token: token.Token,
+    statement: []Statement,
+
+    pub fn tokenLiteral(self: BlockStatementStruct) []const u8 {
         return self.token.Literal;
     }
 };

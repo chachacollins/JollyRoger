@@ -47,6 +47,7 @@ pub const Parser = struct {
         try p.registerPrefix(token.TokenType.TRUE, parseBool);
         try p.registerPrefix(token.TokenType.FALSE, parseBool);
         try p.registerPrefix(token.TokenType.LPAREN, parseGroupedExpression);
+        try p.registerPrefix(token.TokenType.IF, parseIfExpression);
         try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
         try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
@@ -185,6 +186,36 @@ pub const Parser = struct {
         }
 
         return leftExpression;
+    }
+    fn parseBlockStatement(self: *Parser) !ast.BlockStatementStruct {
+        var block = ast.BlockStatementStruct{ .token = self.curToken, .statement = undefined };
+        var blockStatemenst = std.ArrayList(ast.Statement).init(self.allocator);
+        try self.nextToken();
+        while (!self.curTokenIs(token.TokenType.RBRACE) and !self.curTokenIs(token.TokenType.EOF)) {
+            const stmt = try self.parseStatement() orelse undefined;
+            try blockStatemenst.append(stmt);
+            try self.nextToken();
+        }
+        block.statement = try blockStatemenst.toOwnedSlice();
+        return block;
+    }
+    pub fn parseIfExpression(self: *Parser) !ast.Expression {
+        var ifExp = ast.IfExpressionStruct{ .token = self.curToken, .condition = undefined, .consequence = undefined, .alternative = null };
+        if (!try self.expectPeek(token.TokenType.LPAREN)) {
+            return error.MissingLPAREN;
+        }
+        try self.nextToken();
+        const expCond = try self.arena.allocator().create(ast.Expression);
+        expCond.* = try self.parseExpression(Precedence.LOWEST);
+        ifExp.condition = expCond;
+        if (!try self.expectPeek(token.TokenType.RPAREN)) {
+            return error.MissingRPAREN;
+        }
+        if (!try self.expectPeek(token.TokenType.LBRACE)) {
+            return error.MissingLBRACE;
+        }
+        ifExp.consequence = try self.parseBlockStatement();
+        return ast.Expression{ .ifExpression = ifExp };
     }
     pub fn parseIdentifier(self: *Parser) !ast.Expression {
         const pi = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
@@ -528,6 +559,172 @@ fn testBool(exp: ast.Expression, value: bool) !void {
         },
         else => {
             std.zig.fatal("Not boolnerLiteral {}\n", .{exp});
+        },
+    }
+}
+
+test "TestIfExpression" {
+    const input = "if (x < y) { x }";
+    const lex = lexer.Lexer.init(input);
+    var parser = try Parser.init(lex, std.testing.allocator);
+    defer parser.deinit();
+
+    const program = try parser.parseProgram() orelse {
+        std.debug.panic("parse program returned null\n", .{});
+    };
+    defer parser.allocator.free(program.statements);
+
+    if (program.statements.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    }
+
+    const stmt = program.statements[0];
+    switch (stmt) {
+        .expressionStatement => |exprstmt| {
+            const if_exp = switch (exprstmt.expression) {
+                .ifExpression => |if_exp| if_exp,
+                else => {
+                    std.debug.panic("expression not ifExpression, got {}\n", .{exprstmt.expression});
+                },
+            };
+
+            const condition = switch (if_exp.condition.*) {
+                .infixExpression => |infix| infix,
+                else => {
+                    std.debug.panic("condition not infixExpression, got {}\n", .{if_exp.condition.*});
+                },
+            };
+
+            try std.testing.expectEqualStrings("<", condition.operator);
+
+            switch (condition.left.*) {
+                .identifier => |ident| {
+                    try std.testing.expectEqualStrings("x", ident.value);
+                },
+                else => std.debug.panic("left not identifier, got {}\n", .{condition.left.*}),
+            }
+
+            switch (condition.right.*) {
+                .identifier => |ident| {
+                    try std.testing.expectEqualStrings("y", ident.value);
+                },
+                else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
+            }
+
+            if (if_exp.consequence.statement.len != 1) {
+                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
+            }
+
+            switch (if_exp.consequence.statement[0]) {
+                .expressionStatement => |conseq_expr| {
+                    switch (conseq_expr.expression) {
+                        .identifier => |ident| {
+                            try std.testing.expectEqualStrings("x", ident.value);
+                        },
+                        else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
+                    }
+                },
+                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement[0]}),
+            }
+
+            try std.testing.expect(if_exp.alternative == null);
+        },
+        else => {
+            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
+        },
+    }
+}
+test "TestIfElseExpression" {
+    const input = "if (x < y) { x } else { y }";
+    const lex = lexer.Lexer.init(input);
+    var parser = try Parser.init(lex, std.testing.allocator);
+    defer parser.deinit();
+
+    const program = try parser.parseProgram() orelse {
+        std.debug.panic("parse program returned null\n", .{});
+    };
+    defer parser.allocator.free(program.statements);
+
+    if (program.statements.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    }
+
+    const stmt = program.statements[0];
+    switch (stmt) {
+        .expressionStatement => |exprstmt| {
+            const if_exp = switch (exprstmt.expression) {
+                .ifExpression => |if_exp| if_exp,
+                else => {
+                    std.debug.panic("expression not ifExpression, got {}\n", .{exprstmt.expression});
+                },
+            };
+
+            // Test condition
+            const condition = switch (if_exp.condition.*) {
+                .infixExpression => |infix| infix,
+                else => {
+                    std.debug.panic("condition not infixExpression, got {}\n", .{if_exp.condition.*});
+                },
+            };
+
+            try std.testing.expectEqualStrings("<", condition.operator);
+
+            // Test left side of condition
+            switch (condition.left.*) {
+                .identifier => |ident| {
+                    try std.testing.expectEqualStrings("x", ident.value);
+                },
+                else => std.debug.panic("left not identifier, got {}\n", .{condition.left.*}),
+            }
+
+            // Test right side of condition
+            switch (condition.right.*) {
+                .identifier => |ident| {
+                    try std.testing.expectEqualStrings("y", ident.value);
+                },
+                else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
+            }
+
+            // Test consequence
+            if (if_exp.consequence.statement.len != 1) {
+                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
+            }
+
+            switch (if_exp.consequence.statement[0]) {
+                .expressionStatement => |conseq_expr| {
+                    switch (conseq_expr.expression) {
+                        .identifier => |ident| {
+                            try std.testing.expectEqualStrings("x", ident.value);
+                        },
+                        else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
+                    }
+                },
+                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement[0]}),
+            }
+
+            // Test alternative (else block)
+            if (if_exp.alternative) |alt| {
+                if (alt.statement.len != 1) {
+                    std.debug.panic("alternative should have 1 statement, got {d}\n", .{alt.statement.len});
+                }
+
+                switch (alt.statement[0]) {
+                    .expressionStatement => |alt_expr| {
+                        switch (alt_expr.expression) {
+                            .identifier => |ident| {
+                                try std.testing.expectEqualStrings("y", ident.value);
+                            },
+                            else => std.debug.panic("alternative not identifier, got {}\n", .{alt_expr.expression}),
+                        }
+                    },
+                    else => std.debug.panic("alternative statement not expressionStatement, got {}\n", .{alt.statement[0]}),
+                }
+            } else {
+                std.debug.panic("expected alternative to be present\n", .{});
+            }
+        },
+        else => {
+            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
         },
     }
 }
