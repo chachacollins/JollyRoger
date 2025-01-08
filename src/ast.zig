@@ -138,7 +138,7 @@ pub const IfExpressionStruct = struct {
 
 pub const BlockStatementStruct = struct {
     token: token.Token,
-    statement: []Statement,
+    statement: std.ArrayList(Statement),
 
     pub fn tokenLiteral(self: BlockStatementStruct) []const u8 {
         return self.token.Literal;

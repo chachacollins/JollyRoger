@@ -188,15 +188,13 @@ pub const Parser = struct {
         return leftExpression;
     }
     fn parseBlockStatement(self: *Parser) !ast.BlockStatementStruct {
-        var block = ast.BlockStatementStruct{ .token = self.curToken, .statement = undefined };
-        var blockStatemenst = std.ArrayList(ast.Statement).init(self.allocator);
+        var block = ast.BlockStatementStruct{ .token = self.curToken, .statement = std.ArrayList(ast.Statement).init(self.arena.allocator()) };
         try self.nextToken();
         while (!self.curTokenIs(token.TokenType.RBRACE) and !self.curTokenIs(token.TokenType.EOF)) {
             const stmt = try self.parseStatement() orelse undefined;
-            try blockStatemenst.append(stmt);
+            try block.statement.append(stmt);
             try self.nextToken();
         }
-        block.statement = try blockStatemenst.toOwnedSlice();
         return block;
     }
     pub fn parseIfExpression(self: *Parser) !ast.Expression {
@@ -618,12 +616,11 @@ test "TestIfExpression" {
                 else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
             }
 
-            defer parser.allocator.free(if_exp.consequence.statement);
-            if (if_exp.consequence.statement.len != 1) {
-                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
+            if (if_exp.consequence.statement.items.len != 1) {
+                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.items.len});
             }
 
-            switch (if_exp.consequence.statement[0]) {
+            switch (if_exp.consequence.statement.items[0]) {
                 .expressionStatement => |conseq_expr| {
                     switch (conseq_expr.expression) {
                         .identifier => |ident| {
@@ -632,7 +629,7 @@ test "TestIfExpression" {
                         else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
                     }
                 },
-                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement[0]}),
+                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement.items[0]}),
             }
 
             try std.testing.expect(if_exp.alternative == null);
@@ -693,13 +690,12 @@ test "TestIfElseExpression" {
                 else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
             }
 
-            defer parser.allocator.free(if_exp.consequence.statement);
             // Test consequence
-            if (if_exp.consequence.statement.len != 1) {
-                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.len});
+            if (if_exp.consequence.statement.items.len != 1) {
+                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.items.len});
             }
 
-            switch (if_exp.consequence.statement[0]) {
+            switch (if_exp.consequence.statement.items[0]) {
                 .expressionStatement => |conseq_expr| {
                     switch (conseq_expr.expression) {
                         .identifier => |ident| {
@@ -708,17 +704,16 @@ test "TestIfElseExpression" {
                         else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
                     }
                 },
-                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement[0]}),
+                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement.items[0]}),
             }
 
             // Test alternative (else block)
             if (if_exp.alternative) |alt| {
-                defer parser.allocator.free(alt.statement);
-                if (alt.statement.len != 1) {
-                    std.debug.panic("alternative should have 1 statement, got {d}\n", .{alt.statement.len});
+                if (alt.statement.items.len != 1) {
+                    std.debug.panic("alternative should have 1 statement, got {d}\n", .{alt.statement.items.len});
                 }
 
-                switch (alt.statement[0]) {
+                switch (alt.statement.items[0]) {
                     .expressionStatement => |alt_expr| {
                         switch (alt_expr.expression) {
                             .identifier => |ident| {
@@ -727,7 +722,7 @@ test "TestIfElseExpression" {
                             else => std.debug.panic("alternative not identifier, got {}\n", .{alt_expr.expression}),
                         }
                     },
-                    else => std.debug.panic("alternative statement not expressionStatement, got {}\n", .{alt.statement[0]}),
+                    else => std.debug.panic("alternative statement not expressionStatement, got {}\n", .{alt.statement.items[0]}),
                 }
             } else {
                 std.debug.panic("expected alternative to be present\n", .{});
