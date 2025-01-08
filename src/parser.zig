@@ -215,6 +215,13 @@ pub const Parser = struct {
             return error.MissingLBRACE;
         }
         ifExp.consequence = try self.parseBlockStatement();
+        if (self.peekTokenIs(token.TokenType.ELSE)) {
+            try self.nextToken();
+            if (!try self.expectPeek(token.TokenType.LBRACE)) {
+                return error.MissingLBRACE;
+            }
+            ifExp.alternative = try self.parseBlockStatement();
+        }
         return ast.Expression{ .ifExpression = ifExp };
     }
     pub fn parseIdentifier(self: *Parser) !ast.Expression {
