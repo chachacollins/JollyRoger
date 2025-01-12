@@ -143,8 +143,9 @@ pub const Parser = struct {
         }
     }
     fn parseReturnStament(self: *Parser) !?ast.Statement {
-        const returnStmt = ast.ReturnStatementStruct{ .token = self.curToken, .returnValue = undefined };
+        var returnStmt = ast.ReturnStatementStruct{ .token = self.curToken, .returnValue = undefined };
         try self.nextToken();
+        returnStmt.returnValue = try self.parseExpression(Precedence.LOWEST);
         while (!self.curTokenIs(token.TokenType.SEMICOLON)) {
             try self.nextToken();
         }
@@ -161,7 +162,9 @@ pub const Parser = struct {
         if (!try self.expectPeek(token.TokenType.ASSIGN)) {
             return null;
         }
-        while (self.curToken.Type != token.TokenType.SEMICOLON) {
+        try self.nextToken();
+        letstmt.value = try self.parseExpression(Precedence.LOWEST);
+        if (self.peekTokenIs(token.TokenType.SEMICOLON)) {
             try self.nextToken();
         }
         const stmt = ast.Statement{ .letStatement = letstmt };
