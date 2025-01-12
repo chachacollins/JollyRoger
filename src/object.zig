@@ -1,57 +1,57 @@
 const std = @import("std");
 
-pub const Object = struct {
-    ptr: *anyopaque,
-    vtable: *const Vtable,
-
-    pub const Vtable = struct {
-        Type: *const fn () ObjectType,
-        Inspect: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) anyerror![]const u8,
-    };
-
-    pub fn Type(self: Object) ObjectType {
-        return self.vtable.Type();
-    }
-
-    pub fn Inspect(self: Object, allocator: std.mem.Allocator) ![]const u8 {
-        return self.vtable.Inspect(self.ptr, allocator);
-    }
+pub const ObjectType = enum {
+    INTEGER_OBJ,
+    BOOLEAN_OBJ,
+    NULL_OBJ,
 };
 
-const ObjectType = enum { INTEGER_OBJ };
+pub const Object = union(enum) {
+    integer: Integer,
+    boolean: Boolean,
+    null_: Null,
+    pub fn Inspect(self: Object) ![]const u8 {
+        switch (self) {
+            inline else => |case| return try case.Inspect(),
+        }
+    }
+    pub fn typeOf(self: Object) ObjectType {
+        switch (self) {
+            inline else => |case| return try case.typeOf(),
+        }
+    }
+};
 
 pub const Integer = struct {
     value: i64,
-
-    pub fn Type() ObjectType {
+    pub fn Inspect(self: Integer, allocator: std.mem.Allocator) ![]const u8 {
+        return try std.fmt.allocPrint(allocator, "{d}", .{self.value});
+    }
+    pub fn typeOf() ObjectType {
         return ObjectType.INTEGER_OBJ;
     }
+};
+pub const Boolean = struct {
+    value: bool,
 
-    pub fn Inspect(ctx: *anyopaque, allocator: std.mem.Allocator) ![]const u8 {
-        const self: *Integer = @ptrCast(@alignCast(ctx));
-        return std.fmt.allocPrint(allocator, "{d}", .{self.value});
+    pub fn Inspect(self: Boolean, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.value) {
+            return allocator.dupe(u8, "true");
+        } else {
+            return allocator.dupe(u8, "false");
+        }
     }
-
-    const vtable: Object.Vtable = .{
-        .Type = Type,
-        .Inspect = Inspect,
-    };
-
-    pub fn Obj(self: *Integer) Object {
-        return .{ .ptr = self, .vtable = &vtable };
+    pub fn typeOf() ObjectType {
+        return ObjectType.BOOLEAN_OBJ;
     }
 };
 
-test "TestOBJ" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var testInt = Integer{ .value = 69 };
-    const testObj = testInt.Obj();
-    
-    try std.testing.expectEqual(testObj.Type(), ObjectType.INTEGER_OBJ);
-    
-    const inspected = try testObj.Inspect(allocator);
-    try std.testing.expectEqualStrings("69", inspected);
-}
+pub const Null = struct {
+    pub fn Inspect(self: Null, allocator: std.mem.Allocator) ![]const u8 {
+        _ = self;
+        return allocator.dupe(u8, "null");
+    }
+    pub fn typeOf() ObjectType {
+        return ObjectType.NULL_OBJ;
+    }
+};
