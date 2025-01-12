@@ -57,6 +57,7 @@ pub const Parser = struct {
         try p.registerInfix(token.TokenType.NOT_EQ, parseInfixExpression);
         try p.registerInfix(token.TokenType.LT, parseInfixExpression);
         try p.registerInfix(token.TokenType.GT, parseInfixExpression);
+        try p.registerInfix(token.TokenType.LPAREN, parseCallExpression);
 
         try p.precedences.put(token.TokenType.EQ, Precedence.EQUALS);
         try p.precedences.put(token.TokenType.NOT_EQ, Precedence.EQUALS);
@@ -66,6 +67,7 @@ pub const Parser = struct {
         try p.precedences.put(token.TokenType.MINUS, Precedence.SUM);
         try p.precedences.put(token.TokenType.SLASH, Precedence.SUM);
         try p.precedences.put(token.TokenType.ASTERIS, Precedence.SUM);
+        try p.precedences.put(token.TokenType.LPAREN, Precedence.CALL);
 
         try p.nextToken();
         try p.nextToken();
@@ -307,6 +309,31 @@ pub const Parser = struct {
             try self.nextToken();
             const idents = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
             try params.append(idents);
+        }
+
+        if (!try self.expectPeek(token.TokenType.RPAREN)) {
+            return error.MissingRPAREN;
+        }
+    }
+    pub fn parseCallExpression(self: *Parser, func: ast.Expression) !ast.Expression {
+        const funct = try self.arena.allocator().create(ast.Expression);
+        funct.* = func;
+        var exp = ast.CallExpressionStruct{ .token = self.curToken, .function = funct, .arguements = std.ArrayList(ast.Expression).init(self.arena.allocator()) };
+        try self.parseCallArguements(&exp.arguements);
+        return ast.Expression{ .callExpression = exp };
+    }
+    fn parseCallArguements(self: *Parser, args: *std.ArrayList(ast.Expression)) !void {
+        if (self.peekTokenIs(token.TokenType.RPAREN)) {
+            try self.nextToken();
+            return;
+        }
+
+        try self.nextToken();
+        try args.append(try self.parseExpression(Precedence.LOWEST));
+        while (self.peekTokenIs(token.TokenType.COMMA)) {
+            try self.nextToken();
+            try self.nextToken();
+            try args.append(try self.parseExpression(Precedence.LOWEST));
         }
 
         if (!try self.expectPeek(token.TokenType.RPAREN)) {
@@ -837,6 +864,102 @@ test "TestFunctionLiteralParsing" {
                     }
                 },
                 else => std.debug.panic("body statement not expressionStatement, got {}\n", .{bodyStmt}),
+            }
+        },
+        else => {
+            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
+        },
+    }
+}
+
+test "TestCallExpressionParsing" {
+    const input = "add(1, 2 * 3, 4 + 5);";
+    const lex = lexer.Lexer.init(input);
+    var parser = try Parser.init(lex, std.testing.allocator);
+    defer parser.deinit();
+
+    const program = try parser.parseProgram() orelse {
+        std.debug.panic("parse program returned null\n", .{});
+    };
+    defer parser.allocator.free(program.statements);
+
+    if (program.statements.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    }
+
+    const stmt = program.statements[0];
+    switch (stmt) {
+        .expressionStatement => |exprstmt| {
+            const call = switch (exprstmt.expression) {
+                .callExpression => |call_expr| call_expr,
+                else => {
+                    std.debug.panic("expression not callExpression, got {}\n", .{exprstmt.expression});
+                },
+            };
+
+            // Test function identifier
+            switch (call.function.*) {
+                .identifier => |ident| {
+                    try std.testing.expectEqualStrings("add", ident.value);
+                },
+                else => std.debug.panic("function not identifier, got {}\n", .{call.function.*}),
+            }
+
+            // Test arguements
+            if (call.arguements.items.len != 3) {
+                std.debug.panic("call should have 3 arguements, got {d}\n", .{call.arguements.items.len});
+            }
+
+            // Test first argument (1)
+            switch (call.arguements.items[0]) {
+                .integerLiteral => |int| {
+                    try std.testing.expectEqual(@as(i64, 1), int.value);
+                },
+                else => std.debug.panic("first argument not integer, got {}\n", .{call.arguements.items[0]}),
+            }
+
+            // Test second argument (2 * 3)
+            switch (call.arguements.items[1]) {
+                .infixExpression => |infix| {
+                    try std.testing.expectEqualStrings("*", infix.operator);
+
+                    switch (infix.left.*) {
+                        .integerLiteral => |int| {
+                            try std.testing.expectEqual(@as(i64, 2), int.value);
+                        },
+                        else => std.debug.panic("left not integer, got {}\n", .{infix.left.*}),
+                    }
+
+                    switch (infix.right.*) {
+                        .integerLiteral => |int| {
+                            try std.testing.expectEqual(@as(i64, 3), int.value);
+                        },
+                        else => std.debug.panic("right not integer, got {}\n", .{infix.right.*}),
+                    }
+                },
+                else => std.debug.panic("second argument not infix expression, got {}\n", .{call.arguements.items[1]}),
+            }
+
+            // Test third argument (4 + 5)
+            switch (call.arguements.items[2]) {
+                .infixExpression => |infix| {
+                    try std.testing.expectEqualStrings("+", infix.operator);
+
+                    switch (infix.left.*) {
+                        .integerLiteral => |int| {
+                            try std.testing.expectEqual(@as(i64, 4), int.value);
+                        },
+                        else => std.debug.panic("left not integer, got {}\n", .{infix.left.*}),
+                    }
+
+                    switch (infix.right.*) {
+                        .integerLiteral => |int| {
+                            try std.testing.expectEqual(@as(i64, 5), int.value);
+                        },
+                        else => std.debug.panic("right not integer, got {}\n", .{infix.right.*}),
+                    }
+                },
+                else => std.debug.panic("third argument not infix expression, got {}\n", .{call.arguements.items[2]}),
             }
         },
         else => {
