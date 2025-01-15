@@ -47,7 +47,7 @@ pub const Expression = union(enum) {
 };
 
 pub const Program = struct {
-    statements: []Statement,
+    statements: std.ArrayList(Statement),
     pub fn tokenLiteral(self: Program) []const u8 {
         if (self.statements.len > 0) {
             return self.statements[0].tokenLiteral();

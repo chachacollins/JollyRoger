@@ -118,15 +118,13 @@ pub const Parser = struct {
     }
     pub fn parseProgram(self: *Parser) !?ast.Program {
         var program = ast.Program{
-            .statements = undefined,
+            .statements = std.ArrayList(ast.Statement).init(self.arena.allocator()),
         };
-        var programStatements = std.ArrayList(ast.Statement).init(self.allocator);
         while (self.curToken.Type != token.TokenType.EOF) {
             const stmt = try self.parseStatement();
-            try programStatements.append(stmt.?);
+            try program.statements.append(stmt.?);
             try self.nextToken();
         }
-        program.statements = try programStatements.toOwnedSlice();
         return program;
     }
     fn parseStatement(self: *Parser) !?ast.Statement {
@@ -380,9 +378,8 @@ test "TestLetStatement" {
         }
         std.zig.fatal("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
-    if (program.statements.len != 3) {
-        std.zig.fatal("expected 3 program statements but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 3) {
+        std.zig.fatal("expected 3 program.statements.items but got {d}\n", .{program.statements.items.len});
     }
     const testStruct = struct {
         expectedIdentifier: []const u8,
@@ -393,7 +390,7 @@ test "TestLetStatement" {
         testStruct{ .expectedIdentifier = "foobar" },
     };
     for (tests, 0..) |tt, i| {
-        const stmt = program.statements[i];
+        const stmt = program.statements.items[i];
         testLetStatement(stmt, tt.expectedIdentifier);
     }
 }
@@ -428,12 +425,11 @@ test "TestReturnStatement" {
     const program = try parser.parseProgram() orelse {
         std.zig.fatal("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 3) {
-        std.zig.fatal("expected 3 program statements but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 3) {
+        std.zig.fatal("expected 3 program.statements.items but got {d}\n", .{program.statements.items.len});
     }
-    for (program.statements) |stmt| {
+    for (program.statements.items) |stmt| {
         switch (stmt) {
             .returnStatement => |returnStmt| {
                 try std.testing.expectEqualStrings("return", returnStmt.tokenLiteral());
@@ -453,12 +449,11 @@ test "TestIdentifierExpression" {
     const program = try parser.parseProgram() orelse {
         std.zig.fatal("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
     }
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             try std.testing.expectEqualStrings("foobar", exprstmt.expression.identifier.value);
@@ -478,12 +473,11 @@ test "TestIntegerExpression" {
     const program = try parser.parseProgram() orelse {
         std.zig.fatal("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
     }
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             try std.testing.expectEqual(5, exprstmt.expression.integerLiteral.value);
@@ -512,11 +506,10 @@ test "TestPrefixParsing" {
         const program = try parser.parseProgram() orelse {
             std.zig.fatal("parse program returned null\n", .{});
         };
-        defer parser.allocator.free(program.statements);
-        if (program.statements.len != 1) {
-            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        if (program.statements.items.len != 1) {
+            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
         }
-        const stmt = program.statements[0];
+        const stmt = program.statements.items[0];
         switch (stmt) {
             .expressionStatement => |exprstmt| {
                 const exp = exprstmt.expression.prefixExpression;
@@ -572,11 +565,10 @@ test "TestParsingInfixOperations" {
         const program = try parser.parseProgram() orelse {
             std.zig.fatal("parse program returned null\n", .{});
         };
-        defer parser.allocator.free(program.statements);
-        if (program.statements.len != 1) {
-            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        if (program.statements.items.len != 1) {
+            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
         }
-        const stmt = program.statements[0];
+        const stmt = program.statements.items[0];
         switch (stmt) {
             .expressionStatement => |exprstmt| {
                 const exp = exprstmt.expression.infixExpression;
@@ -604,11 +596,10 @@ test "TestBooleanParsing" {
         const program = try parser.parseProgram() orelse {
             std.zig.fatal("parse program returned null\n", .{});
         };
-        defer parser.allocator.free(program.statements);
-        if (program.statements.len != 1) {
-            std.zig.fatal("expected 1 program statements but got {d}\n", .{program.statements.len});
+        if (program.statements.items.len != 1) {
+            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
         }
-        const stmt = program.statements[0];
+        const stmt = program.statements.items[0];
         switch (stmt) {
             .expressionStatement => |exprstmt| {
                 const exp = exprstmt.expression;
@@ -643,13 +634,12 @@ test "TestIfExpression" {
     const program = try parser.parseProgram() orelse {
         std.debug.panic("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
     }
 
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             const if_exp = switch (exprstmt.expression) {
@@ -714,13 +704,12 @@ test "TestIfElseExpression" {
     const program = try parser.parseProgram() orelse {
         std.debug.panic("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
     }
 
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             const if_exp = switch (exprstmt.expression) {
@@ -809,13 +798,12 @@ test "TestFunctionLiteralParsing" {
     const program = try parser.parseProgram() orelse {
         std.debug.panic("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
     }
 
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             const function = switch (exprstmt.expression) {
@@ -884,13 +872,12 @@ test "TestCallExpressionParsing" {
     const program = try parser.parseProgram() orelse {
         std.debug.panic("parse program returned null\n", .{});
     };
-    defer parser.allocator.free(program.statements);
 
-    if (program.statements.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.len});
+    if (program.statements.items.len != 1) {
+        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
     }
 
-    const stmt = program.statements[0];
+    const stmt = program.statements.items[0];
     switch (stmt) {
         .expressionStatement => |exprstmt| {
             const call = switch (exprstmt.expression) {

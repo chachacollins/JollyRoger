@@ -6,7 +6,7 @@ const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 
 pub fn Eval(node: ast.Program) !object.Object {
-    switch (node.statements[0]) {
+    switch (node.statements.items[0]) {
         .expressionStatement => |exp| {
             switch (exp.expression) {
                 .integerLiteral => {
