@@ -5,8 +5,15 @@ const token = @import("token.zig");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 
+const TRUE = object.Boolean{ .value = true };
+const FALSE = object.Boolean{ .value = false };
+const NULL = object.Object{ .null_ = .{} };
+
 pub fn Eval(node: ast.Program) !object.Object {
-    return try evalStatement(node.statements.items[0]);
+    if (node.statements.items.len > 0) {
+        return try evalStatement(node.statements.items[0]);
+    }
+    return NULL;
 }
 pub fn evalStatement(statement: ast.Statement) !object.Object {
     switch (statement) {
@@ -14,7 +21,7 @@ pub fn evalStatement(statement: ast.Statement) !object.Object {
             return try evalExpressionStatement(exp);
         },
         else => {
-            return object.Object{ .null_ = .{} };
+            return NULL;
         },
     }
 }
@@ -26,12 +33,20 @@ pub fn evalExpressionStatement(exp: ast.ExpressionStatementStruct) !object.Objec
             return object.Object{ .integer = int_obj };
         },
         .boolean => {
-            const boolean_obj = object.Boolean{ .value = exp.expression.boolean.value };
+            const boolean_obj = nativeBooleanObject(exp.expression.boolean.value);
             return object.Object{ .boolean = boolean_obj };
         },
         else => {
-            return object.Object{ .null_ = .{} };
+            return NULL;
         },
+    }
+}
+
+fn nativeBooleanObject(input: bool) object.Boolean {
+    if (input) {
+        return TRUE;
+    } else {
+        return FALSE;
     }
 }
 
