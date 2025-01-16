@@ -25,6 +25,10 @@ pub fn evalExpressionStatement(exp: ast.ExpressionStatementStruct) !object.Objec
             const int_obj = object.Integer{ .value = exp.expression.integerLiteral.value };
             return object.Object{ .integer = int_obj };
         },
+        .boolean => {
+            const boolean_obj = object.Boolean{ .value = exp.expression.boolean.value };
+            return object.Object{ .boolean = boolean_obj };
+        },
         else => {
             return object.Object{ .null_ = .{} };
         },
@@ -62,6 +66,32 @@ fn testIntObj(obj: object.Object, expected: i64) !void {
         },
         else => {
             std.zig.fatal("Expected type {s} but got {}\n", .{ "integer", obj });
+        },
+    }
+}
+
+test "TestEvalBooleanExpression" {
+    const testStruct = struct {
+        input: []const u8,
+        expected: bool,
+    };
+    const tests = [_]testStruct{
+        testStruct{ .input = "true", .expected = true },
+        testStruct{ .input = "false", .expected = false },
+    };
+    for (tests) |tt| {
+        const evaluated = try testEval(tt.input);
+        try testBoolObj(evaluated, tt.expected);
+    }
+}
+
+fn testBoolObj(obj: object.Object, expected: bool) !void {
+    switch (obj) {
+        .boolean => |lbool| {
+            try std.testing.expectEqual(expected, lbool.value);
+        },
+        else => {
+            std.zig.fatal("Expected type {s} but got {}\n", .{ "bool", obj });
         },
     }
 }

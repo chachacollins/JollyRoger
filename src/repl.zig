@@ -9,7 +9,7 @@ pub fn start(Allocator: std.mem.Allocator) !void {
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
-    try stdout.print("Aargh me hearty! Welcome to tha Jolly Roger V 0.0.1\n", .{});
+    try stdout.print("Ahoy ye scurvy dog! Welcome aboard the Jolly Roger  v0.0.1\n", .{});
     try bw.flush(); 
     defer token.keywords.deinit();
     while (true) {
