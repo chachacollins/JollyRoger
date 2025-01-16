@@ -6,21 +6,29 @@ const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 
 pub fn Eval(node: ast.Program) !object.Object {
-    switch (node.statements.items[0]) {
+    return try evalStatement(node.statements.items[0]);
+}
+pub fn evalStatement(statement: ast.Statement) !object.Object {
+    switch (statement) {
         .expressionStatement => |exp| {
-            switch (exp.expression) {
-                .integerLiteral => {
-                    const int_obj = object.Integer{ .value = exp.expression.integerLiteral.value };
-                    return object.Object{ .integer = int_obj };
-                },
-                else => {},
-            }
+            return try evalExpressionStatement(exp);
         },
         else => {
-            std.zig.fatal("Got some other type {}\n", .{node});
+            return object.Object{ .null_ = .{} };
         },
     }
-    return object.Object{ .null_ = .{} };
+}
+
+pub fn evalExpressionStatement(exp: ast.ExpressionStatementStruct) !object.Object {
+    switch (exp.expression) {
+        .integerLiteral => {
+            const int_obj = object.Integer{ .value = exp.expression.integerLiteral.value };
+            return object.Object{ .integer = int_obj };
+        },
+        else => {
+            return object.Object{ .null_ = .{} };
+        },
+    }
 }
 
 test "TestEvalInterger Expression" {
