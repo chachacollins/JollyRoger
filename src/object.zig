@@ -10,9 +10,9 @@ pub const Object = union(enum) {
     integer: Integer,
     boolean: Boolean,
     null_: Null,
-    pub fn Inspect(self: Object) ![]const u8 {
+    pub fn Inspect(self: Object, allocator: std.mem.Allocator) ![]const u8 {
         switch (self) {
-            inline else => |case| return try case.Inspect(),
+            inline else => |case| return try case.Inspect(allocator),
         }
     }
     pub fn typeOf(self: Object) ObjectType {
