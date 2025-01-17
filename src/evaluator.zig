@@ -18,7 +18,7 @@ pub fn Eval(node: ast.Program) !object.Object {
 pub fn evalStatement(statement: ast.Statement) !object.Object {
     switch (statement) {
         .expressionStatement => |exp| {
-            return try evalExpressionStatement(exp);
+            return try evalExpressionStatement(exp.expression);
         },
         else => {
             return NULL;
@@ -26,20 +26,50 @@ pub fn evalStatement(statement: ast.Statement) !object.Object {
     }
 }
 
-pub fn evalExpressionStatement(exp: ast.ExpressionStatementStruct) !object.Object {
-    switch (exp.expression) {
+pub fn evalExpressionStatement(exp: ast.Expression) !object.Object {
+    switch (exp) {
         .integerLiteral => {
-            const int_obj = object.Integer{ .value = exp.expression.integerLiteral.value };
+            const int_obj = object.Integer{ .value = exp.integerLiteral.value };
             return object.Object{ .integer = int_obj };
         },
         .boolean => {
-            const boolean_obj = nativeBooleanObject(exp.expression.boolean.value);
+            const boolean_obj = nativeBooleanObject(exp.boolean.value);
             return object.Object{ .boolean = boolean_obj };
+        },
+        .prefixExpression => {
+            const right = try evalExpressionStatement(exp.prefixExpression.right.*);
+            return evalPrefixExpression(exp.prefixExpression.operator, right);
         },
         else => {
             return NULL;
         },
     }
+}
+fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Object {
+    if (std.mem.eql(u8, "!", operator)) {
+        return evalBangExpression(right);
+    } else {
+        return NULL;
+    }
+}
+
+fn evalBangExpression(right: object.Object) object.Object {
+    switch (right) {
+        .boolean => |boolean| {
+            if (boolean.value == true) {
+                return object.Object{ .boolean = FALSE };
+            } else if (boolean.value == false) {
+                return object.Object{ .boolean = TRUE };
+            }
+        },
+        .null_ => {
+            return object.Object{ .boolean = TRUE };
+        },
+        else => {
+            return object.Object{ .boolean = FALSE };
+        },
+    }
+    return object.Object{ .boolean = FALSE };
 }
 
 fn nativeBooleanObject(input: bool) object.Boolean {
@@ -108,5 +138,25 @@ fn testBoolObj(obj: object.Object, expected: bool) !void {
         else => {
             std.zig.fatal("Expected type {s} but got {}\n", .{ "bool", obj });
         },
+    }
+}
+
+test "TestBangOperator" {
+    const testStruct = struct {
+        input: []const u8,
+        expected: bool,
+    };
+    const tests = [_]testStruct{
+        testStruct{ .input = "!true", .expected = false },
+        testStruct{ .input = "!false", .expected = true },
+        testStruct{ .input = "!5", .expected = false },
+        testStruct{ .input = "!!5", .expected = true },
+        testStruct{ .input = "!!true", .expected = true },
+        testStruct{ .input = "!!false", .expected = false },
+    };
+
+    for (tests) |tt| {
+        const evaluated = try testEval(tt.input);
+        try testBoolObj(evaluated, tt.expected);
     }
 }
