@@ -20,7 +20,7 @@ pub const Parser = struct {
     lexer: lexer.Lexer,
     curToken: token.Token,
     peekToken: token.Token,
-    errors: std.ArrayList([]u8),
+    errors_: std.ArrayList([]u8),
     precedences: std.AutoHashMap(token.TokenType, Precedence),
     prefixParseFns: std.AutoHashMap(token.TokenType, prefixParseFn),
     infixParseFns: std.AutoHashMap(token.TokenType, infixParseFn),
@@ -34,7 +34,7 @@ pub const Parser = struct {
             .curToken = undefined,
             .peekToken = undefined,
             .allocator = allocator,
-            .errors = std.ArrayList([]u8).init(allocator),
+            .errors_ = std.ArrayList([]u8).init(allocator),
             .prefixParseFns = std.AutoHashMap(token.TokenType, prefixParseFn).init(allocator),
             .infixParseFns = std.AutoHashMap(token.TokenType, infixParseFn).init(allocator),
             .precedences = std.AutoHashMap(token.TokenType, Precedence).init(allocator),
@@ -74,10 +74,10 @@ pub const Parser = struct {
         return p;
     }
     pub fn deinit(self: *Parser) void {
-        for (self.errors.items) |msg| {
+        for (self.errors_.items) |msg| {
             self.allocator.free(msg);
         }
-        self.errors.deinit();
+        self.errors_.deinit();
         self.prefixParseFns.deinit();
         self.infixParseFns.deinit();
         self.precedences.deinit();
@@ -85,7 +85,7 @@ pub const Parser = struct {
     }
 
     pub fn errors(self: *Parser) []const u8 {
-        return self.errors;
+        return self.errors_;
     }
     fn noPrefixFnError(self: *Parser, tok: token.TokenType) void {
         _ = self;
@@ -110,7 +110,7 @@ pub const Parser = struct {
 
     fn peekError(self: *Parser, tok: token.TokenType) !void {
         const msg = try std.fmt.allocPrint(self.allocator, "expected next token to be {}, got {} instead", .{ tok, self.peekToken.Type });
-        try self.errors.append(msg);
+        try self.errors_.append(msg);
     }
     pub fn nextToken(self: *Parser) !void {
         self.curToken = self.peekToken;
@@ -370,9 +370,9 @@ test "TestLetStatement" {
     var parser = try Parser.init(lex, std.testing.allocator);
     defer parser.deinit();
     const program = try parser.parseProgram() orelse {
-        if (parser.errors.items.len > 0) {
+        if (parser.errors_.items.len > 0) {
             std.log.warn("Parser has encountered an error\n", .{});
-            for (parser.errors.items) |msg| {
+            for (parser.errors_.items) |msg| {
                 std.debug.print("parser errors {s}\n", .{msg});
             }
         }
