@@ -26,6 +26,7 @@ pub fn main() anyerror!void {
     var inputBuf: [65536]u8 = undefined;
     var lastPos: usize = 0;
 
+    try stdout.print("Ahoy ye scurvy dog! Welcome aboard the Jolly Roger  v1.0.1\n", .{});
     while (true) {
         try stdout.print(">> ", .{});
 
