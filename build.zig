@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
 
     // Add a build step to compile the app
     const exe = b.addExecutable(.{
-        .name = "monkey-zig",
+        .name = "jolly",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = mode,
