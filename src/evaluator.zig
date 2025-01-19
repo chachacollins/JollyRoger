@@ -62,6 +62,10 @@ fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Objec
 fn evalInfixExpression(operator: []const u8, right: object.Object, left: object.Object) object.Object {
     if (right.typeOf() == object.ObjectType.INTEGER_OBJ and left.typeOf() == object.ObjectType.INTEGER_OBJ) {
         return evalIntegerInfixExpression(operator, left, right);
+    } else if (std.mem.eql(u8, operator, "==")) {
+        return object.Object{ .boolean = nativeBooleanObject(left.boolean.value == right.boolean.value) };
+    } else if (std.mem.eql(u8, operator, "!=")) {
+        return object.Object{ .boolean = nativeBooleanObject(left.boolean.value != right.boolean.value) };
     } else {
         return NULL;
     }
