@@ -1,959 +1,1437 @@
-const lexer = @import("lexer.zig");
-const token = @import("token.zig");
-const ast = @import("ast.zig");
 const std = @import("std");
+const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
 
-const prefixParseFn = *const fn (*Parser) anyerror!ast.Expression;
-const infixParseFn = *const fn (*Parser, ast.Expression) anyerror!ast.Expression;
+const String = @import("string").String;
 
-const Precedence = enum(u8) {
-    LOWEST = 0,
-    EQUALS = 1,
-    LESSGREATER = 2,
-    SUM = 3,
-    PRODUCT = 4,
-    PREFIX = 5,
-    CALL = 6,
+const Token = @import("token.zig").Token;
+const TokenTag = @import("token.zig").TokenTag;
+const Lexer = @import("lexer.zig").Lexer;
+const ast = @import("ast.zig");
+
+pub const ParserError = error{ ExpectOperator, ExpectExpression, ExpectIdentifier, InvalidPrefix, InvalidInfix, ExpectPeek, InvalidHashLiteral, InvalidStringLiteral, InvalidFunctionParam, InvalidBooleanLiteral, InvalidIntegerLiteral, InvalidInteger, InvalidBlockStatement, InvalidExpressionList, InvalidProgram, MemoryAllocation };
+
+const Priority = enum(u4) {
+    lowest = 0,
+    equals = 1,
+    lessgreater = 2,
+    sum = 3,
+    product = 4,
+    prefix = 5,
+    call = 6,
+    index = 7,
+
+    fn lessThan(self: Priority, other: Priority) bool {
+        return @intFromEnum(self) < @intFromEnum(other);
+    }
+
+    fn fromToken(token: Token) Priority {
+        return switch (token) {
+            .equal => .equals,
+            .notEqual => .equals,
+            .lt => .lessgreater,
+            .gt => .lessgreater,
+            .plus => .sum,
+            .minus => .sum,
+            .slash => .product,
+            .asterisk => .product,
+            .lparen => .call,
+            .lbracket => .index,
+            else => .lowest,
+        };
+    }
 };
 
+fn getOperatorFromToken(token: Token) !ast.Operator {
+    return switch (token) {
+        .assign => .assign,
+        .plus => .plus,
+        .minus => .minus,
+        .bang => .bang,
+        .asterisk => .asterisk,
+        .slash => .slash,
+        .equal => .equal,
+        .notEqual => .notEqual,
+        .lt => .lt,
+        .gt => .gt,
+        else => ParserError.ExpectOperator,
+    };
+}
+
 pub const Parser = struct {
-    lexer: lexer.Lexer,
-    curToken: token.Token,
-    peekToken: token.Token,
-    errors_: std.ArrayList([]u8),
-    precedences: std.AutoHashMap(token.TokenType, Precedence),
-    prefixParseFns: std.AutoHashMap(token.TokenType, prefixParseFn),
-    infixParseFns: std.AutoHashMap(token.TokenType, infixParseFn),
+    lexer: *Lexer,
+    currentToken: Token,
+    peekToken: Token,
     allocator: std.mem.Allocator,
-    arena: std.heap.ArenaAllocator,
-    pub fn init(lex: lexer.Lexer, allocator: std.mem.Allocator) !Parser {
-        const arena = std.heap.ArenaAllocator.init(allocator);
-        var p = Parser{
-            //zls
-            .lexer = lex,
-            .curToken = undefined,
-            .peekToken = undefined,
-            .allocator = allocator,
-            .errors_ = std.ArrayList([]u8).init(allocator),
-            .prefixParseFns = std.AutoHashMap(token.TokenType, prefixParseFn).init(allocator),
-            .infixParseFns = std.AutoHashMap(token.TokenType, infixParseFn).init(allocator),
-            .precedences = std.AutoHashMap(token.TokenType, Precedence).init(allocator),
-            .arena = arena,
+
+    const Self = @This();
+
+    pub fn new(lexer: *Lexer, allocator: std.mem.Allocator) Self {
+        const currentToken = lexer.nextToken();
+        const peekToken = lexer.nextToken();
+
+        return .{ .lexer = lexer, .currentToken = currentToken, .peekToken = peekToken, .allocator = allocator };
+    }
+
+    fn nextToken(self: *Self) void {
+        self.currentToken = self.peekToken;
+        self.peekToken = self.lexer.nextToken();
+    }
+
+    pub fn parseProgram(self: *Self) ParserError!ast.Program {
+        var statements = std.ArrayList(ast.Statement).init(self.allocator);
+
+        while (self.currentToken != Token.eof) {
+            const statement = try self.parseStatement();
+            statements.append(statement) catch return ParserError.InvalidProgram;
+            self.nextToken();
+        }
+
+        return ast.Program{ .statements = statements };
+    }
+
+    fn parseStatement(self: *Self) ParserError!ast.Statement {
+        return switch (self.currentToken) {
+            .let => ast.Statement{ .let = try self.parseLetStatement() },
+            .return_ => ast.Statement{ .return_ = try self.parseReturnStatement() },
+            else => ast.Statement{ .expressionStatement = try self.parseExpressionStatement() },
         };
-        try p.registerPrefix(token.TokenType.IDENT, parseIdentifier);
-        try p.registerPrefix(token.TokenType.INT, parseIntegerLiteral);
-        try p.registerPrefix(token.TokenType.BANG, parsePrefixExpression);
-        try p.registerPrefix(token.TokenType.MINUS, parsePrefixExpression);
-        try p.registerPrefix(token.TokenType.TRUE, parseBool);
-        try p.registerPrefix(token.TokenType.FALSE, parseBool);
-        try p.registerPrefix(token.TokenType.LPAREN, parseGroupedExpression);
-        try p.registerPrefix(token.TokenType.IF, parseIfExpression);
-        try p.registerPrefix(token.TokenType.FUNCTION, parseFunctionLiteral);
-        try p.registerInfix(token.TokenType.PLUS, parseInfixExpression);
-        try p.registerInfix(token.TokenType.MINUS, parseInfixExpression);
-        try p.registerInfix(token.TokenType.SLASH, parseInfixExpression);
-        try p.registerInfix(token.TokenType.ASTERIS, parseInfixExpression);
-        try p.registerInfix(token.TokenType.EQ, parseInfixExpression);
-        try p.registerInfix(token.TokenType.NOT_EQ, parseInfixExpression);
-        try p.registerInfix(token.TokenType.LT, parseInfixExpression);
-        try p.registerInfix(token.TokenType.GT, parseInfixExpression);
-        try p.registerInfix(token.TokenType.LPAREN, parseCallExpression);
-
-        try p.precedences.put(token.TokenType.EQ, Precedence.EQUALS);
-        try p.precedences.put(token.TokenType.NOT_EQ, Precedence.EQUALS);
-        try p.precedences.put(token.TokenType.LT, Precedence.LESSGREATER);
-        try p.precedences.put(token.TokenType.GT, Precedence.LESSGREATER);
-        try p.precedences.put(token.TokenType.PLUS, Precedence.SUM);
-        try p.precedences.put(token.TokenType.MINUS, Precedence.SUM);
-        try p.precedences.put(token.TokenType.SLASH, Precedence.SUM);
-        try p.precedences.put(token.TokenType.ASTERIS, Precedence.SUM);
-        try p.precedences.put(token.TokenType.LPAREN, Precedence.CALL);
-
-        try p.nextToken();
-        try p.nextToken();
-        return p;
-    }
-    pub fn deinit(self: *Parser) void {
-        for (self.errors_.items) |msg| {
-            self.allocator.free(msg);
-        }
-        self.errors_.deinit();
-        self.prefixParseFns.deinit();
-        self.infixParseFns.deinit();
-        self.precedences.deinit();
-        self.arena.deinit();
     }
 
-    pub fn errors(self: *Parser) []const u8 {
-        return self.errors_;
-    }
-    fn noPrefixFnError(self: *Parser, tok: token.TokenType) void {
-        _ = self;
-        std.debug.print("no prefix function found for {}\n", .{tok});
-    }
-    fn registerPrefix(self: *Parser, tokenType: token.TokenType, func: prefixParseFn) !void {
-        try self.prefixParseFns.put(tokenType, func);
-    }
+    fn parseLetStatement(self: *Self) ParserError!ast.Let {
+        try self.expectPeek(.ident);
 
-    fn registerInfix(self: *Parser, tokenType: token.TokenType, func: infixParseFn) !void {
-        try self.infixParseFns.put(tokenType, func);
-    }
-    fn peekPrecedence(self: *Parser) !Precedence {
-        const prec = self.precedences.get(self.peekToken.Type) orelse Precedence.LOWEST;
-        return prec;
-    }
-
-    fn curPrecedence(self: *Parser) !u8 {
-        const prec = try self.precedences.get(self.curToken.Type) orelse Precedence.LOWEST;
-        return @intFromEnum(prec);
-    }
-
-    fn peekError(self: *Parser, tok: token.TokenType) !void {
-        const msg = try std.fmt.allocPrint(self.allocator, "expected next token to be {}, got {} instead", .{ tok, self.peekToken.Type });
-        try self.errors_.append(msg);
-    }
-    pub fn nextToken(self: *Parser) !void {
-        self.curToken = self.peekToken;
-        self.peekToken = try self.lexer.nextToken();
-    }
-    pub fn parseProgram(self: *Parser) !?ast.Program {
-        var program = ast.Program{
-            .statements = std.ArrayList(ast.Statement).init(self.arena.allocator()),
+        const name =
+            switch (self.currentToken) {
+            .ident => |ident| ast.Identifier{ .value = ident },
+            else => unreachable,
         };
-        while (self.curToken.Type != token.TokenType.EOF) {
-            const stmt = try self.parseStatement();
-            try program.statements.append(stmt.?);
-            try self.nextToken();
+
+        try self.expectPeek(.assign);
+        self.nextToken();
+
+        var expression = try self.parseExpression(.lowest);
+        if (self.peekTokenIs(.semicolon)) {
+            self.nextToken();
         }
-        return program;
-    }
-    fn parseStatement(self: *Parser) !?ast.Statement {
-        switch (self.curToken.Type) {
-            token.TokenType.LET => {
-                return try self.parseLetStatement();
+
+        switch (expression) {
+            .function => |*function| {
+                function.*.name = name.value;
             },
-            token.TokenType.RETURN => {
-                return try self.parseReturnStament();
-            },
-            else => {
-                return try self.parseExpressionStatement();
-            },
+            else => {},
         }
+
+        const expressionPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        expressionPtr.* = expression;
+        return ast.Let{ .name = name, .value = expressionPtr };
     }
-    fn parseReturnStament(self: *Parser) !?ast.Statement {
-        var returnStmt = ast.ReturnStatementStruct{ .token = self.curToken, .returnValue = undefined };
-        try self.nextToken();
-        returnStmt.returnValue = try self.parseExpression(Precedence.LOWEST);
-        while (!self.curTokenIs(token.TokenType.SEMICOLON)) {
-            try self.nextToken();
+
+    fn parseReturnStatement(self: *Self) ParserError!ast.Return {
+        self.nextToken();
+
+        const returnValue = try self.parseExpression(.lowest);
+        if (self.peekTokenIs(.semicolon)) {
+            self.nextToken();
         }
-        const stmt = ast.Statement{ .returnStatement = returnStmt };
-        return stmt;
+
+        const returnValuePtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        returnValuePtr.* = returnValue;
+        return ast.Return{ .value = returnValuePtr };
     }
-    fn parseLetStatement(self: *Parser) !?ast.Statement {
-        var letstmt = ast.LetStatementStruct{ .token = self.curToken, .name = undefined, .value = undefined };
-        if (!try self.expectPeek(token.TokenType.IDENT)) {
-            return null;
+
+    fn parseBlockStatement(self: *Self) ParserError!ast.Block {
+        var statements = std.ArrayList(ast.Statement).init(self.allocator);
+
+        self.nextToken();
+
+        while (!self.currentTokenIs(.rbrace) and !self.currentTokenIs(.eof)) {
+            const statement = try self.parseStatement();
+            statements.append(statement) catch return ParserError.InvalidBlockStatement;
+            self.nextToken();
         }
-        const astIdent = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
-        letstmt.name = astIdent;
-        if (!try self.expectPeek(token.TokenType.ASSIGN)) {
-            return null;
-        }
-        try self.nextToken();
-        letstmt.value = try self.parseExpression(Precedence.LOWEST);
-        if (self.peekTokenIs(token.TokenType.SEMICOLON)) {
-            try self.nextToken();
-        }
-        const stmt = ast.Statement{ .letStatement = letstmt };
-        return stmt;
+
+        return ast.Block{ .statements = statements };
     }
-    fn parseExpressionStatement(self: *Parser) !ast.Statement {
-        var exprstmt = ast.ExpressionStatementStruct{ .token = self.curToken, .expression = undefined };
-        exprstmt.expression = try self.parseExpression(Precedence.LOWEST);
-        if (self.peekTokenIs(token.TokenType.SEMICOLON)) {
-            try self.nextToken();
+
+    fn parseExpressionStatement(self: *Self) ParserError!ast.ExpressionStatement {
+        const expression = try self.parseExpression(.lowest);
+        if (self.peekTokenIs(.semicolon)) {
+            self.nextToken();
         }
-        const stmt = ast.Statement{ .expressionStatement = exprstmt };
-        return stmt;
+
+        const expressionPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        expressionPtr.* = expression;
+        return ast.ExpressionStatement{ .expression = expressionPtr };
     }
-    fn parseExpression(self: *Parser, precedence: Precedence) !ast.Expression {
-        const prefix = self.prefixParseFns.get(self.curToken.Type) orelse {
-            self.noPrefixFnError(self.curToken.Type);
-            return error.ParsingError;
-        };
-        var leftExpression = try prefix(self);
-        while (!self.peekTokenIs(token.TokenType.SEMICOLON) and @intFromEnum(precedence) < @intFromEnum(try self.peekPrecedence())) {
-            const infix = self.infixParseFns.get(self.peekToken.Type) orelse return leftExpression;
-            try self.nextToken();
-            leftExpression = try infix(self, leftExpression);
+
+    fn parseExpression(self: *Self, precedende: Priority) ParserError!ast.Expression {
+        var leftExpression = try self.parseExpressionByPrefixToken(self.currentToken);
+
+        while (!self.peekTokenIs(.semicolon) and precedende.lessThan(Priority.fromToken(self.peekToken))) {
+            const leftExpressionPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+            leftExpressionPtr.* = leftExpression;
+
+            leftExpression = try self.parseInfixExpressionByToken(self.peekToken, leftExpressionPtr);
         }
 
         return leftExpression;
     }
-    fn parseBlockStatement(self: *Parser) !ast.BlockStatementStruct {
-        var block = ast.BlockStatementStruct{ .token = self.curToken, .statement = std.ArrayList(ast.Statement).init(self.arena.allocator()) };
-        try self.nextToken();
-        while (!self.curTokenIs(token.TokenType.RBRACE) and !self.curTokenIs(token.TokenType.EOF)) {
-            const stmt = try self.parseStatement() orelse undefined;
-            try block.statement.append(stmt);
-            try self.nextToken();
-        }
-        return block;
+
+    fn parseIdentifier(self: Self) ParserError!ast.Identifier {
+        return switch (self.currentToken) {
+            .ident => |value| ast.Identifier{ .value = value },
+            else => ParserError.ExpectIdentifier,
+        };
     }
-    pub fn parseIfExpression(self: *Parser) !ast.Expression {
-        var ifExp = ast.IfExpressionStruct{ .token = self.curToken, .condition = undefined, .consequence = undefined, .alternative = null };
-        if (!try self.expectPeek(token.TokenType.LPAREN)) {
-            return error.MissingLPAREN;
+
+    fn parseInteger(self: Self) ParserError!ast.Integer {
+        return switch (self.currentToken) {
+            .int => |value| ast.Integer{ .value = std.fmt.parseInt(i64, value, 10) catch return ParserError.InvalidInteger },
+            else => ParserError.InvalidIntegerLiteral,
+        };
+    }
+
+    fn parseBoolean(self: Self) ParserError!ast.Boolean {
+        return switch (self.currentToken) {
+            .true_ => ast.Boolean{ .value = true },
+            .false_ => ast.Boolean{ .value = false },
+            else => ParserError.InvalidBooleanLiteral,
+        };
+    }
+
+    fn parseGroupedExpression(self: *Self) ParserError!ast.Expression {
+        self.nextToken();
+        const expression = try self.parseExpression(.lowest);
+        try self.expectPeek(.rparen);
+        return expression;
+    }
+
+    fn parsePrefixExpression(self: *Self) ParserError!ast.PrefixExpression {
+        const operator = try getOperatorFromToken(self.currentToken);
+        self.nextToken();
+        const right = try self.parseExpression(.prefix);
+        const rightPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        rightPtr.* = right;
+
+        return ast.PrefixExpression{ .operator = operator, .right = rightPtr };
+    }
+
+    fn parseInfixExpression(self: *Self, left: *ast.Expression) ParserError!ast.InfixExpression {
+        const operator = try getOperatorFromToken(self.currentToken);
+        const priority = Priority.fromToken(self.currentToken);
+
+        self.nextToken();
+
+        const right = try self.parseExpression(priority);
+        const rightPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        rightPtr.* = right;
+
+        return ast.InfixExpression{ .operator = operator, .left = left, .right = rightPtr };
+    }
+
+    fn parseIfExpression(self: *Self) ParserError!ast.If {
+        try self.expectPeek(.lparen);
+
+        self.nextToken();
+
+        const condition = try self.parseExpression(.lowest);
+        const conditionPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        conditionPtr.* = condition;
+
+        try self.expectPeek(.rparen);
+        try self.expectPeek(.lbrace);
+
+        const thenBlock = try self.parseBlockStatement();
+        var elseBlock: ?ast.Block = null;
+        if (self.peekTokenIs(.else_)) {
+            self.nextToken();
+            try self.expectPeek(.lbrace);
+
+            elseBlock = try self.parseBlockStatement();
         }
-        try self.nextToken();
-        const expCond = try self.arena.allocator().create(ast.Expression);
-        expCond.* = try self.parseExpression(Precedence.LOWEST);
-        ifExp.condition = expCond;
-        if (!try self.expectPeek(token.TokenType.RPAREN)) {
-            return error.MissingRPAREN;
+
+        return ast.If{ .condition = conditionPtr, .thenBranch = thenBlock, .elseBranch = elseBlock };
+    }
+
+    fn parseFunctionLiteral(self: *Self) ParserError!ast.Function {
+        try self.expectPeek(.lparen);
+
+        const parameters = try self.parseFunctionParameters();
+        try self.expectPeek(.lbrace);
+
+        const body = try self.parseBlockStatement();
+
+        return ast.Function{ .parameters = parameters, .body = body, .name = "" };
+    }
+
+    fn parseFunctionParameters(self: *Self) ParserError!std.ArrayList(ast.Identifier) {
+        var parameters = std.ArrayList(ast.Identifier).init(self.allocator);
+        if (self.peekTokenIs(.rparen)) {
+            self.nextToken();
+            return parameters;
         }
-        if (!try self.expectPeek(token.TokenType.LBRACE)) {
-            return error.MissingLBRACE;
+
+        self.nextToken();
+
+        parameters.append(try self.parseIdentifier()) catch return ParserError.InvalidFunctionParam;
+
+        while (self.peekTokenIs(.comma)) {
+            self.nextToken();
+            self.nextToken();
+            parameters.append(try self.parseIdentifier()) catch return ParserError.InvalidFunctionParam;
         }
-        ifExp.consequence = try self.parseBlockStatement();
-        if (self.peekTokenIs(token.TokenType.ELSE)) {
-            try self.nextToken();
-            if (!try self.expectPeek(token.TokenType.LBRACE)) {
-                return error.MissingLBRACE;
+        try self.expectPeek(.rparen);
+
+        return parameters;
+    }
+
+    fn parseCallExpression(self: *Self, callee: *ast.Expression) ParserError!ast.Call {
+        return ast.Call{ .callee = callee, .arguments = try self.parseExpressionList(.rparen) };
+    }
+
+    fn parseExpressionList(self: *Self, endToken: TokenTag) ParserError!std.ArrayList(ast.Expression) {
+        var list = std.ArrayList(ast.Expression).init(self.allocator);
+        if (self.peekTokenIs(endToken)) {
+            self.nextToken();
+            return list;
+        }
+
+        self.nextToken();
+        list.append(try self.parseExpression(.lowest)) catch return ParserError.InvalidExpressionList;
+
+        while (self.peekTokenIs(.comma)) {
+            self.nextToken();
+            self.nextToken();
+            list.append(try self.parseExpression(.lowest)) catch return ParserError.InvalidExpressionList;
+        }
+        try self.expectPeek(endToken);
+
+        return list;
+    }
+
+    fn parseStringLiteral(self: Self) ParserError!ast.StringLiteral {
+        return switch (self.currentToken) {
+            .stringLiteral => |value| ast.StringLiteral{ .value = value },
+            else => ParserError.InvalidStringLiteral,
+        };
+    }
+
+    fn parseArrayLiteral(self: *Self) ParserError!ast.Array {
+        return ast.Array{ .elements = try self.parseExpressionList(.rbracket) };
+    }
+
+    fn parseIndexExpression(self: *Self, left: *ast.Expression) ParserError!ast.Index {
+        self.nextToken();
+        const index = try self.parseExpression(.lowest);
+        const indexPtr = self.allocator.create(ast.Expression) catch return ParserError.MemoryAllocation;
+        indexPtr.* = index;
+
+        try self.expectPeek(.rbracket);
+
+        return ast.Index{ .left = left, .index = indexPtr };
+    }
+
+    fn parseHashLiteral(self: *Self) ParserError!ast.Hash {
+        var hash = ast.Hash{ .pairs = std.ArrayList(ast.HashPair).init(self.allocator) };
+
+        while (!self.peekTokenIs(.rbrace)) {
+            self.nextToken();
+            const key = try self.parseExpression(.lowest);
+            try self.expectPeek(.colon);
+            self.nextToken();
+            const value = try self.parseExpression(.lowest);
+            hash.pairs.append(ast.HashPair{ .key = key, .value = value }) catch return ParserError.InvalidHashLiteral;
+
+            if (!self.peekTokenIs(.rbrace)) {
+                self.expectPeek(.comma) catch return ParserError.InvalidHashLiteral;
             }
-            ifExp.alternative = try self.parseBlockStatement();
         }
-        return ast.Expression{ .ifExpression = ifExp };
-    }
-    pub fn parseIdentifier(self: *Parser) !ast.Expression {
-        const pi = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
-        const stmt = ast.Expression{ .identifier = pi };
-        return stmt;
-    }
-    pub fn parseIntegerLiteral(self: *Parser) !ast.Expression {
-        var lit = ast.IntegerLiteralStruct{ .token = self.curToken, .value = undefined };
-        const value = try std.fmt.parseInt(i64, self.curToken.Literal, 10);
-        lit.value = value;
-        const stmt = ast.Expression{ .integerLiteral = lit };
-        return stmt;
-    }
-    pub fn parsePrefixExpression(self: *Parser) !ast.Expression {
-        var exps = ast.PrefixExpressionStruct{
-            .token = self.curToken,
-            .operator = self.curToken.Literal,
-            .right = undefined,
-        };
-        try self.nextToken();
-        const right_exp = try self.arena.allocator().create(ast.Expression);
-        right_exp.* = try self.parseExpression(Precedence.PREFIX);
-        exps.right = right_exp;
-        return ast.Expression{ .prefixExpression = exps };
-    }
-    pub fn parseInfixExpression(self: *Parser, left: ast.Expression) !ast.Expression {
-        var exps = ast.InfixExpressionStruct{
-            .token = self.curToken,
-            .operator = self.curToken.Literal,
-            .left = undefined,
-            .right = undefined,
-        };
-        const leftExp = try self.arena.allocator().create(ast.Expression);
-        leftExp.* = left;
-        exps.left = leftExp;
-        const precedence = try self.peekPrecedence();
-        try self.nextToken();
-        const rightExp = try self.arena.allocator().create(ast.Expression);
-        rightExp.* = try self.parseExpression(precedence);
-        exps.right = rightExp;
-        return ast.Expression{ .infixExpression = exps };
-    }
-    pub fn parseBool(self: *Parser) !ast.Expression {
-        const exp = ast.BooleanLiteralStruct{ .token = self.curToken, .value = self.curTokenIs(token.TokenType.TRUE) };
-        const stmt = ast.Expression{ .boolean = exp };
-        return stmt;
-    }
-    pub fn parseGroupedExpression(self: *Parser) !ast.Expression {
-        try self.nextToken();
-        const exp = try self.parseExpression(Precedence.LOWEST);
-        if (!try self.expectPeek(token.TokenType.RPAREN)) {
-            return error.ExpectedRparen;
-        }
-        return exp;
-    }
-    pub fn parseFunctionLiteral(self: *Parser) !ast.Expression {
-        var lit = ast.FunctionLiteralStruct{ .token = self.curToken, .body = undefined, .parameters = std.ArrayList(ast.Identifier).init(self.arena.allocator()) };
+        try self.expectPeek(.rbrace);
 
-        if (!try self.expectPeek(token.TokenType.LPAREN)) {
-            return error.MissingLPAREN;
-        }
-        try self.parseFunctionParameters(&lit.parameters);
-        if (!try self.expectPeek(token.TokenType.LBRACE)) {
-            return error.MissingLBRACE;
-        }
-
-        lit.body = try self.parseBlockStatement();
-        return ast.Expression{ .functionLiteral = lit };
+        return hash;
     }
 
-    fn parseFunctionParameters(self: *Parser, params: *std.ArrayList(ast.Identifier)) !void {
-        if (self.peekTokenIs(token.TokenType.RPAREN)) {
-            try self.nextToken();
-            return;
-        }
+    fn parseMacroLiteral(self: *Self) ParserError!ast.MacroLiteral {
+        try self.expectPeek(.lparen);
+        const parameters = try self.parseFunctionParameters();
 
-        try self.nextToken();
-        const ident = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
-        try params.append(ident);
+        try self.expectPeek(.lbrace);
+        const body = try self.parseBlockStatement();
 
-        while (self.peekTokenIs(token.TokenType.COMMA)) {
-            try self.nextToken();
-            try self.nextToken();
-            const idents = ast.Identifier{ .token = self.curToken, .value = self.curToken.Literal };
-            try params.append(idents);
-        }
-
-        if (!try self.expectPeek(token.TokenType.RPAREN)) {
-            return error.MissingRPAREN;
-        }
-    }
-    pub fn parseCallExpression(self: *Parser, func: ast.Expression) !ast.Expression {
-        const funct = try self.arena.allocator().create(ast.Expression);
-        funct.* = func;
-        var exp = ast.CallExpressionStruct{ .token = self.curToken, .function = funct, .arguements = std.ArrayList(ast.Expression).init(self.arena.allocator()) };
-        try self.parseCallArguements(&exp.arguements);
-        return ast.Expression{ .callExpression = exp };
-    }
-    fn parseCallArguements(self: *Parser, args: *std.ArrayList(ast.Expression)) !void {
-        if (self.peekTokenIs(token.TokenType.RPAREN)) {
-            try self.nextToken();
-            return;
-        }
-
-        try self.nextToken();
-        try args.append(try self.parseExpression(Precedence.LOWEST));
-        while (self.peekTokenIs(token.TokenType.COMMA)) {
-            try self.nextToken();
-            try self.nextToken();
-            try args.append(try self.parseExpression(Precedence.LOWEST));
-        }
-
-        if (!try self.expectPeek(token.TokenType.RPAREN)) {
-            return error.MissingRPAREN;
-        }
-    }
-    fn curTokenIs(self: *Parser, t: token.TokenType) bool {
-        return self.curToken.Type == t;
+        return ast.MacroLiteral{ .parameters = parameters, .body = body };
     }
 
-    fn peekTokenIs(self: *Parser, t: token.TokenType) bool {
-        return self.peekToken.Type == t;
+    fn currentTokenIs(self: Self, token: TokenTag) bool {
+        return self.currentToken == token;
     }
 
-    fn expectPeek(self: *Parser, t: token.TokenType) !bool {
-        if (self.peekTokenIs(t)) {
-            try self.nextToken();
-            return true;
+    fn peekTokenIs(self: Self, token: TokenTag) bool {
+        return self.peekToken == token;
+    }
+
+    fn expectPeek(self: *Self, token: TokenTag) ParserError!void {
+        if (self.peekTokenIs(token)) {
+            self.nextToken();
         } else {
-            try self.peekError(t);
-            return false;
+            return ParserError.ExpectPeek;
         }
+    }
+
+    fn parseExpressionByPrefixToken(self: *Self, token: TokenTag) ParserError!ast.Expression {
+        return switch (token) {
+            .ident => ast.Expression{ .identifier = try self.parseIdentifier() },
+            .int => ast.Expression{ .integer = try self.parseInteger() },
+            .bang, .minus => ast.Expression{ .prefixExpression = try self.parsePrefixExpression() },
+            .true_, .false_ => ast.Expression{ .boolean = try self.parseBoolean() },
+            .lparen => try self.parseGroupedExpression(),
+            .if_ => ast.Expression{ .if_ = try self.parseIfExpression() },
+            .function => ast.Expression{ .function = try self.parseFunctionLiteral() },
+            .stringLiteral => ast.Expression{ .stringLiteral = try self.parseStringLiteral() },
+            .lbracket => ast.Expression{ .array = try self.parseArrayLiteral() },
+            .lbrace => ast.Expression{ .hash = try self.parseHashLiteral() },
+            .macro => ast.Expression{ .macroLiteral = try self.parseMacroLiteral() },
+            else => ParserError.InvalidPrefix,
+        };
+    }
+
+    fn parseInfixExpressionByToken(self: *Self, token: TokenTag, left: *ast.Expression) ParserError!ast.Expression {
+        self.nextToken();
+        return switch (token) {
+            .plus, .minus, .asterisk, .slash, .equal, .notEqual, .gt, .lt => ast.Expression{ .infixExpression = try self.parseInfixExpression(left) },
+            .lparen => ast.Expression{ .call = try self.parseCallExpression(left) },
+            .lbracket => ast.Expression{ .index = try self.parseIndexExpression(left) },
+            else => ParserError.InvalidInfix,
+        };
     }
 };
 
-test "TestLetStatement" {
-    const input =
-        \\let x = 5;
-        \\let y = 10;
-        \\let foobar = 838383;
-    ;
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
-    const program = try parser.parseProgram() orelse {
-        if (parser.errors_.items.len > 0) {
-            std.log.warn("Parser has encountered an error\n", .{});
-            for (parser.errors_.items) |msg| {
-                std.debug.print("parser errors {s}\n", .{msg});
-            }
-        }
-        std.zig.fatal("parse program returned null\n", .{});
-    };
-    if (program.statements.items.len != 3) {
-        std.zig.fatal("expected 3 program.statements.items but got {d}\n", .{program.statements.items.len});
-    }
-    const testStruct = struct {
-        expectedIdentifier: []const u8,
-    };
-    const tests = [_]testStruct{
-        testStruct{ .expectedIdentifier = "x" },
-        testStruct{ .expectedIdentifier = "y" },
-        testStruct{ .expectedIdentifier = "foobar" },
-    };
-    for (tests, 0..) |tt, i| {
-        const stmt = program.statements.items[i];
-        testLetStatement(stmt, tt.expectedIdentifier);
-    }
+fn parseProgramForTesting(actualInput: []const u8, expecting: fn (*const ast.Program) anyerror!void) !void {
+    var allocator = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer allocator.deinit();
+
+    var lexer = Lexer.new(actualInput);
+    var parser = Parser.new(&lexer, allocator.allocator());
+    const program = try parser.parseProgram();
+
+    try expecting(&program);
 }
-fn testLetStatement(s: ast.Statement, name: []const u8) void {
-    if (!std.mem.eql(u8, s.tokenLiteral(), "let")) {
-        std.zig.fatal("s not ast.LetStatement literal got {s}\n ", .{s.tokenLiteral()});
-    }
-    switch (s) {
-        .letStatement => |letsmt| {
-            if (!std.mem.eql(u8, letsmt.name.value, name)) {
-                std.zig.fatal("expected name : {s} but got {s}\n", .{ name, letsmt.name.value });
-            }
-            if (!std.mem.eql(u8, letsmt.name.tokenLiteral(), name)) {
-                std.zig.fatal("expected token literal  : {s} but got {s}\n", .{ name, letsmt.name.tokenLiteral() });
-            }
-        },
+
+test "Parser.new" {
+    var lexer = Lexer.new(":;");
+    const parser = Parser.new(&lexer, std.testing.allocator);
+    try expectEqual(Token.colon, parser.currentToken);
+    try expectEqual(Token.semicolon, parser.peekToken);
+}
+
+fn expectLetStatement(expected: *const ast.Let, actual: *const ast.Let) !void {
+    try expectIdentifier(&expected.*.name, &actual.*.name);
+    try expectExpression(expected.*.value, actual.*.value);
+}
+
+fn expectLetStatementByStatement(expected: *const ast.Let, actual: *const ast.Statement) !void {
+    switch (actual.*) {
+        .let => |let| try expectLetStatement(expected, &let),
         else => {
-            std.zig.fatal("s not ast.LetStatement got {}\n ", .{s});
+            std.debug.print("expected .let, found {}\n", .{actual});
+            return error.TestExpectedLetStatementByStatement;
         },
     }
 }
 
-test "TestReturnStatement" {
-    const input =
-        \\return 5;
-        \\return 10;
-        \\return 993322;
-    ;
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
-    const program = try parser.parseProgram() orelse {
-        std.zig.fatal("parse program returned null\n", .{});
-    };
-
-    if (program.statements.items.len != 3) {
-        std.zig.fatal("expected 3 program.statements.items but got {d}\n", .{program.statements.items.len});
-    }
-    for (program.statements.items) |stmt| {
-        switch (stmt) {
-            .returnStatement => |returnStmt| {
-                try std.testing.expectEqualStrings("return", returnStmt.tokenLiteral());
-            },
-            else => {
-                std.zig.fatal("s not ast.returnStatement got {}\n ", .{stmt});
-            },
-        }
-    }
+fn expectReturnStatement(expected: *const ast.Return, actual: *const ast.Return) !void {
+    try expectExpression(expected.*.value, actual.*.value);
 }
 
-test "TestIdentifierExpression" {
-    const input = "foobar;";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
-    const program = try parser.parseProgram() orelse {
-        std.zig.fatal("parse program returned null\n", .{});
-    };
-
-    if (program.statements.items.len != 1) {
-        std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
-    }
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            try std.testing.expectEqualStrings("foobar", exprstmt.expression.identifier.value);
-            try std.testing.expectEqualStrings("foobar", exprstmt.expression.identifier.tokenLiteral());
-        },
+fn expectReturnStatementByStatement(expected: *const ast.Return, actual: *const ast.Statement) !void {
+    switch (actual.*) {
+        .return_ => |return_| try expectReturnStatement(expected, &return_),
         else => {
-            std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+            std.debug.print("expected .return_, found {}\n", .{actual});
+            return error.TestExpectedReturnStatementByStatement;
         },
     }
 }
 
-test "TestIntegerExpression" {
-    const input = "5;";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
-    const program = try parser.parseProgram() orelse {
-        std.zig.fatal("parse program returned null\n", .{});
-    };
+fn expectExpressionStatement(expected: *const ast.ExpressionStatement, actual: *const ast.ExpressionStatement) !void {
+    try expectExpression(expected.*.expression, actual.*.expression);
+}
 
-    if (program.statements.items.len != 1) {
-        std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
-    }
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            try std.testing.expectEqual(5, exprstmt.expression.integerLiteral.value);
-            try std.testing.expectEqualStrings("5", exprstmt.expression.integerLiteral.tokenLiteral());
-        },
+fn expectExpressionStatementByStatement(expected: *const ast.ExpressionStatement, actual: *const ast.Statement) !void {
+    switch (actual.*) {
+        .expressionStatement => |expressionStatement| try expectExpressionStatement(expected, &expressionStatement),
         else => {
-            std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
+            std.debug.print("expected .return_, found {}\n", .{actual});
+            return error.TestExpectedExpressionStatementByStatement;
         },
     }
 }
 
-test "TestPrefixParsing" {
-    const testStruct = struct {
-        input: []const u8,
-        operator: []const u8,
-        integerValue: i64,
-    };
-    const tests = [_]testStruct{
-        testStruct{ .input = "!5", .operator = "!", .integerValue = 5 },
-        testStruct{ .input = "-15", .operator = "-", .integerValue = 15 },
-    };
-    for (tests) |tt| {
-        const lex = lexer.Lexer.init(tt.input);
-        var parser = try Parser.init(lex, std.testing.allocator);
-        defer parser.deinit();
-        const program = try parser.parseProgram() orelse {
-            std.zig.fatal("parse program returned null\n", .{});
-        };
-        if (program.statements.items.len != 1) {
-            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
-        }
-        const stmt = program.statements.items[0];
-        switch (stmt) {
-            .expressionStatement => |exprstmt| {
-                const exp = exprstmt.expression.prefixExpression;
-                try std.testing.expectEqualStrings(tt.operator, exp.operator);
-                try testIntegerLiteral(exp.right.*, tt.integerValue);
-            },
-            else => {
-                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
-            },
-        }
-    }
-}
-
-fn testIntegerLiteral(exp: ast.Expression, value: i64) !void {
-    switch (exp) {
-        .integerLiteral => |integ| {
-            if (integ.value != value) {
-                std.zig.fatal("got value {d} but expected {d}\n", .{ integ.value, value });
-            }
-            var buffer: [256]u8 = undefined;
-            const str = try std.fmt.bufPrint(&buffer, "{d}", .{value});
-            if (!std.mem.eql(u8, str, integ.tokenLiteral())) {
-                std.zig.fatal("got value {s} but expected {s}\n", .{ integ.tokenLiteral(), str });
-            }
-        },
+fn expectStatement(expected: *const ast.Statement, actual: *const ast.Statement) !void {
+    switch (expected.*) {
+        .let => |let| try expectLetStatementByStatement(&let, actual),
+        .return_ => |return_| try expectReturnStatementByStatement(&return_, actual),
+        .expressionStatement => |expressionStatement| try expectExpressionStatementByStatement(&expressionStatement, actual),
         else => {
-            std.zig.fatal("Not integerLiteral {}\n", .{exp});
+            std.debug.print("unsupported {}\n", .{expected});
+            return error.TestExpectedStatement;
         },
     }
 }
 
-test "TestParsingInfixOperations" {
-    const testStruct = struct {
-        input: []const u8,
-        leftValue: i64,
-        operator: []const u8,
-        rightValue: i64,
-    };
-    const tests = [_]testStruct{
-        testStruct{ .input = "5 + 5", .operator = "+", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 - 5", .operator = "-", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 * 5", .operator = "*", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 / 5", .operator = "/", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 > 5", .operator = ">", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 < 5", .operator = "<", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 == 5", .operator = "==", .leftValue = 5, .rightValue = 5 },
-        testStruct{ .input = "5 != 5", .operator = "!=", .leftValue = 5, .rightValue = 5 },
-    };
-    for (tests) |tt| {
-        const lex = lexer.Lexer.init(tt.input);
-        var parser = try Parser.init(lex, std.testing.allocator);
-        defer parser.deinit();
-        const program = try parser.parseProgram() orelse {
-            std.zig.fatal("parse program returned null\n", .{});
-        };
-        if (program.statements.items.len != 1) {
-            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
-        }
-        const stmt = program.statements.items[0];
-        switch (stmt) {
-            .expressionStatement => |exprstmt| {
-                const exp = exprstmt.expression.infixExpression;
-                try std.testing.expectEqualStrings(tt.operator, exp.operator);
-                try testIntegerLiteral(exp.left.*, tt.leftValue);
-                try testIntegerLiteral(exp.right.*, tt.rightValue);
-            },
-            else => {
-                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
-            },
-        }
-    }
+fn expectIdentifier(expected: *const ast.Identifier, actual: *const ast.Identifier) !void {
+    try expectEqualStrings(expected.*.value, actual.*.value);
 }
 
-test "TestBooleanParsing" {
-    const testStruct = struct { input: []const u8, value: bool };
-    const tests = [_]testStruct{
-        testStruct{ .input = "true", .value = true },
-        testStruct{ .input = "false", .value = false },
-    };
-    for (tests) |tt| {
-        const lex = lexer.Lexer.init(tt.input);
-        var parser = try Parser.init(lex, std.testing.allocator);
-        defer parser.deinit();
-        const program = try parser.parseProgram() orelse {
-            std.zig.fatal("parse program returned null\n", .{});
-        };
-        if (program.statements.items.len != 1) {
-            std.zig.fatal("expected 1 program.statements.items but got {d}\n", .{program.statements.items.len});
-        }
-        const stmt = program.statements.items[0];
-        switch (stmt) {
-            .expressionStatement => |exprstmt| {
-                const exp = exprstmt.expression;
-                try testBool(exp, tt.value);
-            },
-            else => {
-                std.zig.fatal("s not ast.expressionStatement got {}\n ", .{stmt});
-            },
-        }
-    }
+fn expectInteger(expected: *const ast.Integer, actual: *const ast.Integer) !void {
+    try expectEqual(expected.*.value, actual.*.value);
 }
 
-fn testBool(exp: ast.Expression, value: bool) !void {
-    switch (exp) {
-        .boolean => |booln| {
-            if (booln.value != value) {
-                std.zig.fatal("got value {} but expected {}\n", .{ booln.value, value });
-            }
-        },
-        else => {
-            std.zig.fatal("Not boolnerLiteral {}\n", .{exp});
-        },
-    }
+fn expectBoolean(expected: *const ast.Boolean, actual: *const ast.Boolean) !void {
+    try expectEqual(expected.*.value, actual.*.value);
 }
 
-test "TestIfExpression" {
-    const input = "if (x < y) { x }";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
+fn expectPrefixExpression(expected: *const ast.PrefixExpression, actual: *const ast.PrefixExpression) anyerror!void {
+    try expectEqual(expected.*.operator, actual.*.operator);
+    try expectExpression(expected.*.right, actual.*.right);
+}
 
-    const program = try parser.parseProgram() orelse {
-        std.debug.panic("parse program returned null\n", .{});
-    };
+fn expectInfixExpression(expected: *const ast.InfixExpression, actual: *const ast.InfixExpression) anyerror!void {
+    try expectExpression(expected.*.left, actual.*.left);
+    try expectEqual(expected.*.operator, actual.*.operator);
+    try expectExpression(expected.*.right, actual.*.right);
+}
 
-    if (program.statements.items.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
-    }
-
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            const if_exp = switch (exprstmt.expression) {
-                .ifExpression => |if_exp| if_exp,
+fn expectExpression(expected: *const ast.Expression, actual: *const ast.Expression) !void {
+    switch (expected.*) {
+        .integer => {
+            switch (actual.*) {
+                .integer => |integer| try expectInteger(&expected.*.integer, &integer),
                 else => {
-                    std.debug.panic("expression not ifExpression, got {}\n", .{exprstmt.expression});
+                    std.debug.print("expected .integer, found {}\n", .{actual});
+                    return error.TestExpectedExpression;
                 },
-            };
-
-            const condition = switch (if_exp.condition.*) {
-                .infixExpression => |infix| infix,
+            }
+        },
+        .boolean => {
+            switch (actual.*) {
+                .boolean => |boolean| try expectBoolean(&expected.*.boolean, &boolean),
                 else => {
-                    std.debug.panic("condition not infixExpression, got {}\n", .{if_exp.condition.*});
+                    std.debug.print("expected .boolean, found {}\n", .{actual});
+                    return error.TestExpectedExpression;
                 },
-            };
-
-            try std.testing.expectEqualStrings("<", condition.operator);
-
-            switch (condition.left.*) {
-                .identifier => |ident| {
-                    try std.testing.expectEqualStrings("x", ident.value);
+            }
+        },
+        .identifier => {
+            switch (actual.*) {
+                .identifier => |identifier| try expectIdentifier(&expected.*.identifier, &identifier),
+                else => {
+                    std.debug.print("expected .identifier, found {}\n", .{actual});
+                    return error.TestExpectedExpression;
                 },
-                else => std.debug.panic("left not identifier, got {}\n", .{condition.left.*}),
             }
-
-            switch (condition.right.*) {
-                .identifier => |ident| {
-                    try std.testing.expectEqualStrings("y", ident.value);
+        },
+        .prefixExpression => {
+            switch (actual.*) {
+                .prefixExpression => |prefixExpression| try expectPrefixExpression(&expected.*.prefixExpression, &prefixExpression),
+                else => {
+                    std.debug.print("expected .prefixExpression, found {}\n", .{actual});
+                    return error.TestExpectedExpression;
                 },
-                else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
             }
-
-            if (if_exp.consequence.statement.items.len != 1) {
-                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.items.len});
-            }
-
-            switch (if_exp.consequence.statement.items[0]) {
-                .expressionStatement => |conseq_expr| {
-                    switch (conseq_expr.expression) {
-                        .identifier => |ident| {
-                            try std.testing.expectEqualStrings("x", ident.value);
-                        },
-                        else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
-                    }
+        },
+        .infixExpression => {
+            switch (actual.*) {
+                .infixExpression => |infixExpression| try expectInfixExpression(&expected.*.infixExpression, &infixExpression),
+                else => {
+                    std.debug.print("expected .infixExpression, found {}\n", .{actual});
+                    return error.TestExpectedExpression;
                 },
-                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement.items[0]}),
             }
-
-            try std.testing.expect(if_exp.alternative == null);
         },
         else => {
-            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
+            std.debug.print("unsupported {}\n", .{expected});
+            return error.TestExpectedExpression;
         },
     }
 }
-test "TestIfElseExpression" {
-    const input = "if (x < y) { x } else { y }";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
 
-    const program = try parser.parseProgram() orelse {
-        std.debug.panic("parse program returned null\n", .{});
-    };
+fn expectOneStatementInProgram(
+    expected: *const ast.Statement,
+    actual: *const ast.Program,
+) !void {
+    try expectEqual(@as(usize, 1), actual.*.statements.items.len);
+    try expectStatement(expected, &actual.*.statements.items[0]);
+}
 
-    if (program.statements.items.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
+fn expectEqualStringParsedProgram(expected: []const u8, actual: []const u8) !void {
+    var allocator = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer allocator.deinit();
+
+    var lexer = Lexer.new(actual);
+    var parser = Parser.new(&lexer, allocator.allocator());
+    var program = try parser.parseProgram();
+
+    var buf = String.init(allocator.allocator());
+    try program.toString(&buf);
+    const ok = buf.cmp(expected);
+    if (!ok) {
+        std.debug.print("\n\texpected: {s} \n\t   found: {s}\n", .{ expected, buf.str() });
+        return error.TestExpectEqualStringParsedProgram;
+    }
+}
+
+test "let statements" {
+    {
+        try parseProgramForTesting("let x = 5", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{ .let = ast.Let{
+                    .name = ast.Identifier{ .value = "x" },
+                    .value = &integer,
+                } }, program);
+            }
+        }.function);
     }
 
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            const if_exp = switch (exprstmt.expression) {
-                .ifExpression => |if_exp| if_exp,
-                else => {
-                    std.debug.panic("expression not ifExpression, got {}\n", .{exprstmt.expression});
-                },
-            };
-
-            // Test condition
-            const condition = switch (if_exp.condition.*) {
-                .infixExpression => |infix| infix,
-                else => {
-                    std.debug.panic("condition not infixExpression, got {}\n", .{if_exp.condition.*});
-                },
-            };
-
-            try std.testing.expectEqualStrings("<", condition.operator);
-
-            // Test left side of condition
-            switch (condition.left.*) {
-                .identifier => |ident| {
-                    try std.testing.expectEqualStrings("x", ident.value);
-                },
-                else => std.debug.panic("left not identifier, got {}\n", .{condition.left.*}),
+    {
+        try parseProgramForTesting("let x = 5;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{ .let = ast.Let{ .name = ast.Identifier{ .value = "x" }, .value = &integer } }, program);
             }
+        }.function);
+    }
 
-            // Test right side of condition
-            switch (condition.right.*) {
-                .identifier => |ident| {
-                    try std.testing.expectEqualStrings("y", ident.value);
-                },
-                else => std.debug.panic("right not identifier, got {}\n", .{condition.right.*}),
+    {
+        try parseProgramForTesting("let y = true;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{ .boolean = ast.Boolean{ .value = true } };
+                try expectOneStatementInProgram(&ast.Statement{ .let = ast.Let{
+                    .name = ast.Identifier{ .value = "y" },
+                    .value = &boolean,
+                } }, program);
             }
+        }.function);
+    }
 
-            // Test consequence
-            if (if_exp.consequence.statement.items.len != 1) {
-                std.debug.panic("consequence should have 1 statement, got {d}\n", .{if_exp.consequence.statement.items.len});
+    {
+        try parseProgramForTesting("let foobar = y;", struct {
+            fn function(program: *const ast.Program) !void {
+                var id = ast.Expression{ .identifier = ast.Identifier{ .value = "y" } };
+                try expectOneStatementInProgram(&ast.Statement{ .let = ast.Let{
+                    .name = ast.Identifier{ .value = "foobar" },
+                    .value = &id,
+                } }, program);
             }
+        }.function);
+    }
+}
 
-            switch (if_exp.consequence.statement.items[0]) {
-                .expressionStatement => |conseq_expr| {
-                    switch (conseq_expr.expression) {
-                        .identifier => |ident| {
-                            try std.testing.expectEqualStrings("x", ident.value);
-                        },
-                        else => std.debug.panic("consequence not identifier, got {}\n", .{conseq_expr.expression}),
-                    }
-                },
-                else => std.debug.panic("consequence statement not expressionStatement, got {}\n", .{if_exp.consequence.statement.items[0]}),
+test {
+    {
+        try parseProgramForTesting("return 5", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{ .return_ = ast.Return{
+                    .value = &integer,
+                } }, program);
             }
+        }.function);
+    }
 
-            // Test alternative (else block)
-            if (if_exp.alternative) |alt| {
-                if (alt.statement.items.len != 1) {
-                    std.debug.panic("alternative should have 1 statement, got {d}\n", .{alt.statement.items.len});
-                }
+    {
+        try parseProgramForTesting("return 5;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{ .return_ = ast.Return{
+                    .value = &integer,
+                } }, program);
+            }
+        }.function);
+    }
 
-                switch (alt.statement.items[0]) {
-                    .expressionStatement => |alt_expr| {
-                        switch (alt_expr.expression) {
-                            .identifier => |ident| {
-                                try std.testing.expectEqualStrings("y", ident.value);
-                            },
-                            else => std.debug.panic("alternative not identifier, got {}\n", .{alt_expr.expression}),
-                        }
+    {
+        try parseProgramForTesting("return true;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{ .boolean = ast.Boolean{ .value = true } };
+                try expectOneStatementInProgram(&ast.Statement{ .return_ = ast.Return{
+                    .value = &boolean,
+                } }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("return y;", struct {
+            fn function(program: *const ast.Program) !void {
+                var id = ast.Expression{ .identifier = ast.Identifier{ .value = "y" } };
+                try expectOneStatementInProgram(&ast.Statement{ .return_ = ast.Return{
+                    .value = &id,
+                } }, program);
+            }
+        }.function);
+    }
+}
+
+test "identifier expression" {
+    try parseProgramForTesting("foobar", struct {
+        fn function(program: *const ast.Program) !void {
+            var id = ast.Expression{ .identifier = ast.Identifier{ .value = "foobar" } };
+            try expectOneStatementInProgram(&ast.Statement{
+                .expressionStatement = ast.ExpressionStatement{ .expression = &id },
+            }, program);
+        }
+    }.function);
+}
+
+test "integer expression" {
+    {
+        try parseProgramForTesting("5", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &integer },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{ .integer = ast.Integer{ .value = 5 } };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &integer },
+                }, program);
+            }
+        }.function);
+    }
+}
+
+test "boolean expression" {
+    {
+        try parseProgramForTesting("true", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{ .boolean = ast.Boolean{ .value = true } };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &boolean },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("true;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{ .boolean = ast.Boolean{ .value = true } };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &boolean },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("false;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{ .boolean = ast.Boolean{ .value = false } };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &boolean },
+                }, program);
+            }
+        }.function);
+    }
+}
+
+test "prefix expression" {
+    {
+        try parseProgramForTesting("!5", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
                     },
-                    else => std.debug.panic("alternative statement not expressionStatement, got {}\n", .{alt.statement.items[0]}),
-                }
-            } else {
-                std.debug.panic("expected alternative to be present\n", .{});
+                };
+                var prefix = ast.Expression{
+                    .prefixExpression = ast.PrefixExpression{ .operator = ast.Operator.bang, .right = &integer },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &prefix },
+                }, program);
             }
-        },
-        else => {
-            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
-        },
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("!5;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var prefix = ast.Expression{
+                    .prefixExpression = ast.PrefixExpression{ .operator = ast.Operator.bang, .right = &integer },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &prefix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("-15;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 15,
+                    },
+                };
+                var prefix = ast.Expression{
+                    .prefixExpression = ast.PrefixExpression{ .operator = ast.Operator.minus, .right = &integer },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &prefix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("!true;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = true,
+                    },
+                };
+                var prefix = ast.Expression{
+                    .prefixExpression = ast.PrefixExpression{ .operator = ast.Operator.bang, .right = &boolean },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &prefix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("!false;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = false,
+                    },
+                };
+                var prefix = ast.Expression{
+                    .prefixExpression = ast.PrefixExpression{ .operator = ast.Operator.bang, .right = &boolean },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &prefix },
+                }, program);
+            }
+        }.function);
     }
 }
 
-test "TestFunctionLiteralParsing" {
-    const input = "fn(x, y) { x + y; }";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
-
-    const program = try parser.parseProgram() orelse {
-        std.debug.panic("parse program returned null\n", .{});
-    };
-
-    if (program.statements.items.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
+test "infix expression" {
+    {
+        try parseProgramForTesting("5 + 10", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{ .left = &integer1, .operator = ast.Operator.plus, .right = &integer2 },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
     }
 
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            const function = switch (exprstmt.expression) {
-                .functionLiteral => |fn_lit| fn_lit,
-                else => {
-                    std.debug.panic("expression not functionLiteral, got {}\n", .{exprstmt.expression});
-                },
-            };
-
-            // Test parameters
-            if (function.parameters.items.len != 2) {
-                std.debug.panic("function literal should have 2 parameters, got {d}\n", .{function.parameters.items.len});
+    {
+        try parseProgramForTesting("5 + 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{ .left = &integer1, .operator = ast.Operator.plus, .right = &integer2 },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
             }
+        }.function);
+    }
 
-            try std.testing.expectEqualStrings("x", function.parameters.items[0].value);
-            try std.testing.expectEqualStrings("y", function.parameters.items[1].value);
-
-            // Test function body
-            if (function.body.statement.items.len != 1) {
-                std.debug.panic("function body should have 1 statement, got {d}\n", .{function.body.statement.items.len});
+    {
+        try parseProgramForTesting("5 - 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.minus,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
             }
+        }.function);
+    }
 
-            const bodyStmt = function.body.statement.items[0];
-            switch (bodyStmt) {
-                .expressionStatement => |body_expr| {
-                    const infix = switch (body_expr.expression) {
-                        .infixExpression => |infix| infix,
-                        else => {
-                            std.debug.panic("body expression not infixExpression, got {}\n", .{body_expr.expression});
-                        },
-                    };
-
-                    try std.testing.expectEqualStrings("+", infix.operator);
-
-                    // Test left side of expression
-                    switch (infix.left.*) {
-                        .identifier => |ident| {
-                            try std.testing.expectEqualStrings("x", ident.value);
-                        },
-                        else => std.debug.panic("left not identifier, got {}\n", .{infix.left.*}),
-                    }
-
-                    // Test right side of expression
-                    switch (infix.right.*) {
-                        .identifier => |ident| {
-                            try std.testing.expectEqualStrings("y", ident.value);
-                        },
-                        else => std.debug.panic("right not identifier, got {}\n", .{infix.right.*}),
-                    }
-                },
-                else => std.debug.panic("body statement not expressionStatement, got {}\n", .{bodyStmt}),
+    {
+        try parseProgramForTesting("5 * 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.asterisk,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
             }
-        },
-        else => {
-            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
-        },
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5 / 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.slash,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5 > 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{ .left = &integer1, .operator = ast.Operator.gt, .right = &integer2 },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5 < 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.lt,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5 == 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.equal,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("5 != 10;", struct {
+            fn function(program: *const ast.Program) !void {
+                var integer1 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 5,
+                    },
+                };
+                var integer2 = ast.Expression{
+                    .integer = ast.Integer{
+                        .value = 10,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &integer1,
+                        .operator = ast.Operator.notEqual,
+                        .right = &integer2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("true == true;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean1 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = true,
+                    },
+                };
+                var boolean2 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = true,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &boolean1,
+                        .operator = ast.Operator.equal,
+                        .right = &boolean2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("true != false;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean1 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = true,
+                    },
+                };
+                var boolean2 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = false,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &boolean1,
+                        .operator = ast.Operator.notEqual,
+                        .right = &boolean2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
+    }
+
+    {
+        try parseProgramForTesting("false == false;", struct {
+            fn function(program: *const ast.Program) !void {
+                var boolean1 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = false,
+                    },
+                };
+                var boolean2 = ast.Expression{
+                    .boolean = ast.Boolean{
+                        .value = false,
+                    },
+                };
+                var infix = ast.Expression{
+                    .infixExpression = ast.InfixExpression{
+                        .left = &boolean1,
+                        .operator = ast.Operator.equal,
+                        .right = &boolean2,
+                    },
+                };
+                try expectOneStatementInProgram(&ast.Statement{
+                    .expressionStatement = ast.ExpressionStatement{ .expression = &infix },
+                }, program);
+            }
+        }.function);
     }
 }
 
-test "TestCallExpressionParsing" {
-    const input = "add(1, 2 * 3, 4 + 5);";
-    const lex = lexer.Lexer.init(input);
-    var parser = try Parser.init(lex, std.testing.allocator);
-    defer parser.deinit();
+test "operator precedence parsing" {
+    try expectEqualStringParsedProgram(
+        "((-a) * b)",
+        "-a * b",
+    );
+    try expectEqualStringParsedProgram(
+        "(!(-a))",
+        "!-a",
+    );
+    try expectEqualStringParsedProgram(
+        "((a + b) + c)",
+        "a + b + c",
+    );
+    try expectEqualStringParsedProgram(
+        "((a + b) - c)",
+        "a + b - c",
+    );
+    try expectEqualStringParsedProgram(
+        "((a * b) * c)",
+        "a * b * c",
+    );
+    try expectEqualStringParsedProgram(
+        "((a * b) / c)",
+        "a * b / c",
+    );
+    try expectEqualStringParsedProgram(
+        "(a + (b / c))",
+        "a + b / c",
+    );
+    try expectEqualStringParsedProgram(
+        "(((a + (b * c)) + (d / e)) - f)",
+        "a + b * c + d / e - f",
+    );
+    try expectEqualStringParsedProgram(
+        "(3 + 4)((-5) * 5)",
+        "3 + 4; -5 * 5",
+    );
+    try expectEqualStringParsedProgram(
+        "((5 > 4) == (3 < 4))",
+        "5 > 4 == 3 < 4",
+    );
+    try expectEqualStringParsedProgram(
+        "((5 < 4) != (3 > 4))",
+        "5 < 4 != 3 > 4",
+    );
+    try expectEqualStringParsedProgram(
+        "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
+        "3 + 4 * 5 == 3 * 1 + 4 * 5",
+    );
+    try expectEqualStringParsedProgram(
+        "true",
+        "true",
+    );
+    try expectEqualStringParsedProgram(
+        "false",
+        "false",
+    );
+    try expectEqualStringParsedProgram(
+        "((3 > 5) == false)",
+        "3 > 5 == false",
+    );
+    try expectEqualStringParsedProgram(
+        "((3 < 5) == true)",
+        "3 < 5 == true",
+    );
+    try expectEqualStringParsedProgram(
+        "((1 + (2 + 3)) + 4)",
+        "1 + (2 + 3) + 4",
+    );
+    try expectEqualStringParsedProgram(
+        "((5 + 5) * 2)",
+        "(5 + 5) * 2",
+    );
+    try expectEqualStringParsedProgram(
+        "(2 / (5 + 5))",
+        "2 / (5 + 5)",
+    );
+    try expectEqualStringParsedProgram(
+        "(-(5 + 5))",
+        "-(5 + 5)",
+    );
+    try expectEqualStringParsedProgram(
+        "(!(true == true))",
+        "!(true == true)",
+    );
+    try expectEqualStringParsedProgram(
+        "((a + add((b * c))) + d)",
+        "a + add(b * c) + d",
+    );
+    try expectEqualStringParsedProgram(
+        "add(a, b, 1, (2 * 3), (4 + 5), add(6, (7 * 8)))",
+        "add(a, b, 1, 2 * 3, 4 + 5, add(6, 7 * 8))",
+    );
+    try expectEqualStringParsedProgram(
+        "add((((a + b) + ((c * d) / f)) + g))",
+        "add(a + b + c * d / f  + g)",
+    );
+    try expectEqualStringParsedProgram(
+        "((a * ([1, 2, 3, 4][(b * c)])) * d)",
+        "a * [1, 2, 3, 4][b * c] * d",
+    );
+    try expectEqualStringParsedProgram(
+        "add((a * (b[2])), (b[1]), (2 * ([1, 2][1])))",
+        "add(a * b[2], b[1], 2 * [1, 2][1])",
+    );
+}
 
-    const program = try parser.parseProgram() orelse {
-        std.debug.panic("parse program returned null\n", .{});
-    };
+test "if expressions" {
+    try expectEqualStringParsedProgram(
+        "if (x < y) { x }",
+        "if (x < y) { x }",
+    );
+    try expectEqualStringParsedProgram(
+        "if (x < y) { x }",
+        "if (x < y) { x; }",
+    );
+    try expectEqualStringParsedProgram(
+        "if (x < y) { x } else { y }",
+        "if (x < y) { x } else { y }",
+    );
+    try expectEqualStringParsedProgram(
+        "if (x < y) { x } else { y }",
+        "if (x < y) { x; } else { y; }",
+    );
+}
 
-    if (program.statements.items.len != 1) {
-        std.debug.panic("expected 1 program statement but got {d}\n", .{program.statements.items.len});
-    }
+test "function expressions" {
+    try expectEqualStringParsedProgram(
+        "fn() { 10 }",
+        "fn() { 10 }",
+    );
+    try expectEqualStringParsedProgram(
+        "fn() { 10 }",
+        "fn() { 10; }",
+    );
 
-    const stmt = program.statements.items[0];
-    switch (stmt) {
-        .expressionStatement => |exprstmt| {
-            const call = switch (exprstmt.expression) {
-                .callExpression => |call_expr| call_expr,
-                else => {
-                    std.debug.panic("expression not callExpression, got {}\n", .{exprstmt.expression});
-                },
-            };
+    try expectEqualStringParsedProgram(
+        "fn(x, y) { (x + y) }",
+        "fn(x, y) { x + y }",
+    );
+    try expectEqualStringParsedProgram(
+        "fn(x, y) { (x + y) }",
+        "fn(x, y) { x + y; }",
+    );
+}
 
-            // Test function identifier
-            switch (call.function.*) {
-                .identifier => |ident| {
-                    try std.testing.expectEqualStrings("add", ident.value);
-                },
-                else => std.debug.panic("function not identifier, got {}\n", .{call.function.*}),
-            }
+test "function parameters" {
+    try expectEqualStringParsedProgram(
+        "fn() {  }",
+        "fn() {}",
+    );
+    try expectEqualStringParsedProgram(
+        "fn(x) {  }",
+        "fn(x) {}",
+    );
+    try expectEqualStringParsedProgram(
+        "fn(x, y, z) {  }",
+        "fn(x, y, z) {}",
+    );
+}
 
-            // Test arguements
-            if (call.arguements.items.len != 3) {
-                std.debug.panic("call should have 3 arguements, got {d}\n", .{call.arguements.items.len});
-            }
-
-            // Test first argument (1)
-            switch (call.arguements.items[0]) {
-                .integerLiteral => |int| {
-                    try std.testing.expectEqual(@as(i64, 1), int.value);
-                },
-                else => std.debug.panic("first argument not integer, got {}\n", .{call.arguements.items[0]}),
-            }
-
-            // Test second argument (2 * 3)
-            switch (call.arguements.items[1]) {
-                .infixExpression => |infix| {
-                    try std.testing.expectEqualStrings("*", infix.operator);
-
-                    switch (infix.left.*) {
-                        .integerLiteral => |int| {
-                            try std.testing.expectEqual(@as(i64, 2), int.value);
+test "function literal with name" {
+    try parseProgramForTesting("let my_function = fn() {}", struct {
+        fn function(program: *const ast.Program) !void {
+            try expectEqual(@as(usize, 1), program.*.statements.items.len);
+            switch (program.*.statements.items[0]) {
+                .let => |let| {
+                    switch (let.value.*) {
+                        .function => |func| {
+                            try expectEqualStrings("my_function", func.name);
                         },
-                        else => std.debug.panic("left not integer, got {}\n", .{infix.left.*}),
-                    }
-
-                    switch (infix.right.*) {
-                        .integerLiteral => |int| {
-                            try std.testing.expectEqual(@as(i64, 3), int.value);
-                        },
-                        else => std.debug.panic("right not integer, got {}\n", .{infix.right.*}),
+                        else => |expression| std.debug.panic("expected let, actual: {}", .{expression}),
                     }
                 },
-                else => std.debug.panic("second argument not infix expression, got {}\n", .{call.arguements.items[1]}),
+                else => |statement| std.debug.panic("expected let, actual: {}", .{statement}),
             }
+        }
+    }.function);
+}
 
-            // Test third argument (4 + 5)
-            switch (call.arguements.items[2]) {
-                .infixExpression => |infix| {
-                    try std.testing.expectEqualStrings("+", infix.operator);
+test "call expressions" {
+    try expectEqualStringParsedProgram(
+        "add(1, (2 * 3), (4 + 5))",
+        "add(1, 2 * 3, 4 + 5);",
+    );
+}
 
-                    switch (infix.left.*) {
-                        .integerLiteral => |int| {
-                            try std.testing.expectEqual(@as(i64, 4), int.value);
-                        },
-                        else => std.debug.panic("left not integer, got {}\n", .{infix.left.*}),
-                    }
+test "string expressions" {
+    try expectEqualStringParsedProgram(
+        "\"Hello\"",
+        "\"Hello\"",
+    );
+    try expectEqualStringParsedProgram(
+        "\"Hello\"",
+        "\"Hello\";",
+    );
+}
 
-                    switch (infix.right.*) {
-                        .integerLiteral => |int| {
-                            try std.testing.expectEqual(@as(i64, 5), int.value);
-                        },
-                        else => std.debug.panic("right not integer, got {}\n", .{infix.right.*}),
-                    }
-                },
-                else => std.debug.panic("third argument not infix expression, got {}\n", .{call.arguements.items[2]}),
-            }
-        },
-        else => {
-            std.debug.panic("statement not expressionStatement, got {}\n", .{stmt});
-        },
-    }
+test "array expressions" {
+    try expectEqualStringParsedProgram(
+        "[]",
+        "[];",
+    );
+    try expectEqualStringParsedProgram(
+        "[]",
+        "[]",
+    );
+    try expectEqualStringParsedProgram(
+        "[1]",
+        "[1];",
+    );
+    try expectEqualStringParsedProgram(
+        "[1, (2 * 3), (4 + 5)]",
+        "[1, 2 * 3, 4 + 5];",
+    );
+}
+
+test "index expressions" {
+    try expectEqualStringParsedProgram(
+        "(myArray[1])",
+        "myArray[1];",
+    );
+    try expectEqualStringParsedProgram(
+        "(myArray[1])",
+        "myArray[1]",
+    );
+
+    try expectEqualStringParsedProgram(
+        "([1, 2, 3][1])",
+        "[1, 2, 3][1]",
+    );
+
+    try expectEqualStringParsedProgram(
+        "([1, 2, 3][(1 + 1)])",
+        "[1, 2, 3][1 + 1]",
+    );
+}
+
+test "hash expressions" {
+    try expectEqualStringParsedProgram(
+        "{}",
+        "{};",
+    );
+    try expectEqualStringParsedProgram(
+        "{}",
+        "{}",
+    );
+
+    try expectEqualStringParsedProgram(
+        "{\"one\": 1}",
+        "{\"one\": 1}",
+    );
+
+    try expectEqualStringParsedProgram(
+        "{\"one\": 1, \"two\": 2, \"three\": 3}",
+        "{\"one\": 1, \"two\": 2, \"three\": 3}",
+    );
+
+    try expectEqualStringParsedProgram(
+        "{\"one\": (0 + 1), \"two\": (10 - 8), \"three\": (15 / 5)}",
+        "{\"one\": 0 + 1, \"two\": 10 - 8, \"three\": 15 / 5}",
+    );
+
+    try expectEqualStringParsedProgram(
+        "{1: 111, 2: \"b\", 3: true}",
+        "{1: 111, 2: \"b\", 3: true}",
+    );
+
+    try expectEqualStringParsedProgram(
+        "{true: 1, false: \"abc\"}",
+        "{true: 1, false: \"abc\"}",
+    );
+}
+
+test "macro literal parsing" {
+    try expectEqualStringParsedProgram(
+        "macro(x, y) { (x + y) }",
+        "macro(x, y) { x + y }",
+    );
+    try expectEqualStringParsedProgram(
+        "macro(x, y) { (x + y) }",
+        "macro(x, y) { x + y; }",
+    );
 }
