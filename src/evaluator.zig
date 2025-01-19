@@ -40,6 +40,11 @@ pub fn evalExpressionStatement(exp: ast.Expression) !object.Object {
             const right = try evalExpressionStatement(exp.prefixExpression.right.*);
             return evalPrefixExpression(exp.prefixExpression.operator, right);
         },
+        .infixExpression => {
+            const left = try evalExpressionStatement(exp.infixExpression.left.*);
+            const right = try evalExpressionStatement(exp.infixExpression.right.*);
+            return evalInfixExpression(exp.infixExpression.operator, right, left);
+        },
         else => {
             return NULL;
         },
@@ -48,6 +53,43 @@ pub fn evalExpressionStatement(exp: ast.Expression) !object.Object {
 fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Object {
     if (std.mem.eql(u8, "!", operator)) {
         return evalBangExpression(right);
+    } else if (std.mem.eql(u8, "-", operator)) {
+        return evalMinusPrefix(right);
+    } else {
+        return NULL;
+    }
+}
+fn evalInfixExpression(operator: []const u8, right: object.Object, left: object.Object) object.Object {
+    if (right.typeOf() == object.ObjectType.INTEGER_OBJ and left.typeOf() == object.ObjectType.INTEGER_OBJ) {
+        return evalIntegerInfixExpression(operator, left, right);
+    } else {
+        return NULL;
+    }
+}
+
+fn evalIntegerInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    const leftval = left.integer.value;
+    const rightval = right.integer.value;
+    if (std.mem.eql(u8, operator, "+")) {
+        const int_obj = object.Integer{ .value = leftval + rightval };
+        return object.Object{ .integer = int_obj };
+    } else if (std.mem.eql(u8, operator, "-")) {
+        const int_obj = object.Integer{ .value = leftval - rightval };
+        return object.Object{ .integer = int_obj };
+    } else if (std.mem.eql(u8, operator, "*")) {
+        const int_obj = object.Integer{ .value = leftval * rightval };
+        return object.Object{ .integer = int_obj };
+    } else if (std.mem.eql(u8, operator, "/")) {
+        const int_obj = object.Integer{ .value = @divTrunc(leftval, rightval) };
+        return object.Object{ .integer = int_obj };
+    } else if (std.mem.eql(u8, operator, "<")) {
+        return object.Object{ .boolean = if (leftval < rightval) TRUE else FALSE };
+    } else if (std.mem.eql(u8, operator, ">")) {
+        return object.Object{ .boolean = if (leftval > rightval) TRUE else FALSE };
+    } else if (std.mem.eql(u8, operator, "==")) {
+        return object.Object{ .boolean = if (leftval == rightval) TRUE else FALSE };
+    } else if (std.mem.eql(u8, operator, "!=")) {
+        return object.Object{ .boolean = if (leftval != rightval) TRUE else FALSE };
     } else {
         return NULL;
     }
@@ -71,6 +113,14 @@ fn evalBangExpression(right: object.Object) object.Object {
     }
     return object.Object{ .boolean = FALSE };
 }
+fn evalMinusPrefix(right: object.Object) object.Object {
+    if (right.typeOf() != object.ObjectType.INTEGER_OBJ) {
+        return NULL;
+    }
+    const value = right.integer.value;
+    const int_obj = object.Integer{ .value = -value };
+    return object.Object{ .integer = int_obj };
+}
 
 fn nativeBooleanObject(input: bool) object.Boolean {
     if (input) {
@@ -88,6 +138,10 @@ test "TestEvalInterger Expression" {
     const tests = [_]testStruct{
         testStruct{ .input = "5", .expected = 5 },
         testStruct{ .input = "10", .expected = 10 },
+        testStruct{ .input = "5 + 5 + 5 + 5 - 10", .expected = 10 },
+        testStruct{ .input = "2 * 2 * 2 * 2 * 2", .expected = 32 },
+        // testStruct{ .input = "(5 + 10 * 2 + 15 / 3) * 2 + -10", .expected = 50 },
+        testStruct{ .input = "3 * (3 * 3) + 10", .expected = 37 },
     };
     for (tests) |tt| {
         const evaluated = try testEval(tt.input);

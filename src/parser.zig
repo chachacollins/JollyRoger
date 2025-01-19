@@ -8,12 +8,12 @@ const infixParseFn = *const fn (*Parser, ast.Expression) anyerror!ast.Expression
 
 const Precedence = enum(u8) {
     LOWEST = 0,
-    EQUALS,
-    LESSGREATER,
-    SUM,
-    PRODUCT,
-    PREFIX,
-    CALL,
+    EQUALS = 1,
+    LESSGREATER = 2,
+    SUM = 3,
+    PRODUCT = 4,
+    PREFIX = 5,
+    CALL = 6,
 };
 
 pub const Parser = struct {
